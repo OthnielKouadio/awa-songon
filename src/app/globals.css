@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --paper: #f7fbff;
+  --ink: #0a1931;
+  --azur: #0096ff;
+}
+
+html {
+  background: var(--paper);
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-grotesk), "Space Grotesk", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--azur);
+  color: #fff;
+}
+
+@layer components {
+  /* Carte : bordure fine bleu nuit, coins ronds, ombre dure */
+  .brut {
+    @apply border-brut border-ink rounded-brut shadow-hard bg-mist;
+  }
+  .brut-sm {
+    @apply border-brut border-ink rounded-2xl bg-white;
+  }
+  .title-xl {
+    @apply font-display font-bold tracking-[-0.01em] [word-spacing:0.12em] leading-[1] text-5xl sm:text-7xl;
+  }
+  .title-lg {
+    @apply font-display font-bold tracking-[-0.01em] [word-spacing:0.12em] leading-[1.05] text-3xl sm:text-5xl;
+  }
+  .title-md {
+    @apply font-display font-bold tracking-[-0.01em] [word-spacing:0.1em] leading-tight text-2xl sm:text-3xl;
+  }
+  .field {
+    @apply w-full border-brut border-ink rounded-2xl bg-white px-4 py-3 text-lg font-medium
+      outline-none transition-shadow placeholder:text-ink/35 focus:border-azur focus:shadow-[0_0_0_4px_#E0F2FF];
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-bold uppercase tracking-widest text-ink/60;
+  }
+}
+
+/* Leaflet aux couleurs du projet */
+.leaflet-container {
+  font-family: var(--font-grotesk), "Space Grotesk", system-ui, sans-serif;
+  background: #e0f2ff;
+}
+.leaflet-popup-content-wrapper {
+  border: 2px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 3px 3px 0 var(--ink);
+  color: var(--ink);
+}
+.leaflet-popup-tip {
+  border: 2px solid var(--ink);
+  box-shadow: none;
+}
+.awa-pin {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 2px solid var(--ink);
+  border-radius: 14px 14px 14px 4px;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+.awa-pin svg {
+  width: 20px;
+  height: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
