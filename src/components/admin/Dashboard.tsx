@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useMemo, useState } from "react";
 import { formatFcfa, heure } from "@/lib/format";
 import type { AdminData, Commande } from "@/lib/types";
+import { CustomSelect } from "../CustomSelect";
 import MapLazy from "../MapLazy";
 import type { MapLine, MapMarker } from "../MapView";
 import { Badge, Counter } from "../ui";
@@ -54,7 +55,8 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
     //  - vers le lot en cours de livraison quand il est parti
     tricycles.forEach((t, i) => {
       const src = sources.find((s) => s.id === t.source_id);
-      if (!src || src.lat == null || src.long == null || !citeOk(src.cite_id)) return;
+      const citeMatch = !filtreCite || t.cite_ids.includes(filtreCite);
+      if (!src || src.lat == null || src.long == null || !citeMatch) return;
       const cible = commandes.find((c) => c.tricycle_id === t.id && c.status === "EN_COURS" && c.lat != null);
       const off = ((i % 5) - 2) * 0.00018;
       let lat = src.lat + 0.0002 + off;
@@ -96,14 +98,15 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
       <section className="brut p-5 sm:p-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="title-md">Carte globale</h2>
-          <select aria-label="Filtrer par cité" className="rounded-xl border-brut border-ink bg-white px-3 py-2 font-bold" value={filtreCite} onChange={(e) => setFiltreCite(e.target.value)}>
-            <option value="">Toutes les cités</option>
-            {cites.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.nom}
-              </option>
-            ))}
-          </select>
+          <div className="w-full max-w-[220px]">
+            <CustomSelect
+              ariaLabel="Filtrer par cité"
+              value={filtreCite}
+              onChange={setFiltreCite}
+              placeholder="Toutes les cités"
+              options={cites.map((c) => ({ value: c.id, label: c.nom }))}
+            />
+          </div>
         </div>
         <MapLazy height={440} markers={markers} lines={lines} fitKey={`${filtreCite}:${markers.length ? "ok" : "vide"}`} />
         <p className="mt-3 text-xs font-medium text-ink/55">
@@ -116,18 +119,16 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
           <h2 className="title-md mb-4">Chauffeurs</h2>
           <ul className="space-y-2">
             {tricycles
-              .filter((t) => {
-                const s = sources.find((x) => x.id === t.source_id);
-                return s && citeOk(s.cite_id);
-              })
+              .filter((t) => !filtreCite || t.cite_ids.includes(filtreCite))
               .map((t) => {
                 const src = sources.find((s) => s.id === t.source_id);
+                const citesTxt = t.cite_ids.map(citeNom).join(", ");
                 const file = commandes.filter((c) => c.tricycle_id === t.id && c.status !== "LIVRE").length;
                 return (
                   <li key={t.id} className="flex items-center justify-between gap-2 rounded-xl border-[1.5px] border-ink bg-white px-3 py-2.5">
                     <span className="min-w-0 truncate font-bold">
                       {t.nom}
-                      <span className="ml-2 text-sm font-medium text-ink/55">{src ? `${citeNom(src.cite_id)} · ${src.nom}` : ""}</span>
+                      <span className="ml-2 text-sm font-medium text-ink/55">{src ? `${citesTxt} · ${src.nom}` : citesTxt}</span>
                     </span>
                     <span className="flex shrink-0 items-center gap-1.5">
                       {file > 0 && <Badge tone="ink">{file} en file</Badge>}

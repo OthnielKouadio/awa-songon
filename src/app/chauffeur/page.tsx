@@ -147,7 +147,8 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="label !mb-1">
-            {profile.cite_nom} · {profile.source_nom}
+            {profile.cites.map((c) => c.nom).join(", ")}
+            {profile.source_nom ? ` · ${profile.source_nom}` : ""}
           </p>
           <h1 className="title-lg">{profile.nom}</h1>
           <div className="mt-2">

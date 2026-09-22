@@ -33,7 +33,11 @@ create table if not exists public.tricycles (
   id         uuid primary key default gen_random_uuid(),
   nom        text not null,
   telephone  text not null unique,
-  source_id  uuid not null references public.sources(id) on delete cascade,
+  -- La source précise (le forage) est facultative : un chauffeur qui n'en
+  -- choisit pas puise "un peu partout" — pas de raison de le bloquer. Les
+  -- cités où il est visible des clients sont dans tricycle_cites ci-dessous
+  -- (plusieurs-à-plusieurs : un chauffeur peut livrer plusieurs cités).
+  source_id  uuid references public.sources(id) on delete cascade,
   status     text not null default 'OFF'         check (status in ('DISPO', 'OFF')),
   etat       text not null default 'A_LA_SOURCE' check (etat in ('A_LA_SOURCE', 'EN_ROUTE')),
   -- Prix (FCFA) que le chauffeur fixe lui-même pour 1000 L.
@@ -48,6 +52,16 @@ create table if not exists public.tricycles (
   pin_bloque_jusqua timestamptz,
   created_at        timestamptz not null default now()
 );
+
+-- Plusieurs-à-plusieurs : un chauffeur peut couvrir (et être vu par) plusieurs
+-- cités en même temps, pas une seule.
+create table if not exists public.tricycle_cites (
+  tricycle_id uuid not null references public.tricycles(id) on delete cascade,
+  cite_id     uuid not null references public.cites(id) on delete cascade,
+  primary key (tricycle_id, cite_id)
+);
+create index if not exists tricycle_cites_cite_idx     on public.tricycle_cites (cite_id);
+create index if not exists tricycle_cites_tricycle_idx on public.tricycle_cites (tricycle_id);
 
 create table if not exists public.clients (
   id         uuid primary key default gen_random_uuid(),
@@ -73,6 +87,22 @@ create table if not exists public.clients (
 
 -- Migration (sans effet sur une base neuve, où la colonne existe déjà ci-dessus).
 alter table public.clients add column if not exists subscription_ends_at timestamptz not null default (now() + interval '30 days');
+
+-- Migration : la source du chauffeur devient facultative, et sa cité (unique)
+-- devient plusieurs cités possibles (tricycle_cites). Sur une base existante,
+-- on reprend sa cité actuelle (déduite de son ancienne source obligatoire) dans
+-- tricycle_cites une seule fois, pour ne perdre aucune donnée ni écraser un
+-- choix déjà fait depuis l'appli (n'insère que si la table est encore vide).
+alter table public.tricycles alter column source_id drop not null;
+do $$ begin
+  if not exists (select 1 from public.tricycle_cites) then
+    insert into public.tricycle_cites (tricycle_id, cite_id)
+    select t.id, s.cite_id
+    from public.tricycles t
+    join public.sources s on s.id = t.source_id
+    where t.source_id is not null;
+  end if;
+end $$;
 
 -- Un seul enregistrement en pratique, mais une table plutôt qu'un singleton codé
 -- en dur : ça permet plusieurs comptes admin plus tard sans migration.
@@ -142,29 +172,31 @@ create trigger admins_normalize_phone before insert or update on public.admins
 --   il n'y a plus de session Supabase Auth dans cette appli. Tout passe par les
 --   fonctions RPC security definer ci-dessous, qui vérifient nos propres jetons.
 
-alter table public.cites     enable row level security;
-alter table public.sources   enable row level security;
-alter table public.tricycles enable row level security;
-alter table public.clients   enable row level security;
-alter table public.commandes enable row level security;
-alter table public.admins    enable row level security;
+alter table public.cites          enable row level security;
+alter table public.sources        enable row level security;
+alter table public.tricycles      enable row level security;
+alter table public.tricycle_cites enable row level security;
+alter table public.clients        enable row level security;
+alter table public.commandes      enable row level security;
+alter table public.admins         enable row level security;
 
 drop policy if exists "cites lecture publique"   on public.cites;
 drop policy if exists "sources lecture publique" on public.sources;
 create policy "cites lecture publique"   on public.cites   for select using (true);
 create policy "sources lecture publique" on public.sources for select using (true);
--- (aucune policy sur tricycles/clients/commandes/admins : accès refusé par défaut)
+-- (aucune policy sur tricycles/tricycle_cites/clients/commandes/admins : accès refusé par défaut)
 
 -- ─── Temps réel (ping + refetch, sans dépendre de RLS/postgres_changes) ────
 -- Les canaux broadcast ne transportent aucune donnée : le client recharge
 -- ensuite via une RPC. cite:<id> et tricycle:<id> pour client/chauffeur,
 -- client:<id> pour le suivi de commande, "admin" pour le cockpit.
 
-do $$ begin alter publication supabase_realtime add table public.commandes; exception when others then null; end $$;
-do $$ begin alter publication supabase_realtime add table public.tricycles; exception when others then null; end $$;
-do $$ begin alter publication supabase_realtime add table public.clients;   exception when others then null; end $$;
-do $$ begin alter publication supabase_realtime add table public.sources;   exception when others then null; end $$;
-do $$ begin alter publication supabase_realtime add table public.cites;     exception when others then null; end $$;
+do $$ begin alter publication supabase_realtime add table public.commandes;      exception when others then null; end $$;
+do $$ begin alter publication supabase_realtime add table public.tricycles;      exception when others then null; end $$;
+do $$ begin alter publication supabase_realtime add table public.tricycle_cites; exception when others then null; end $$;
+do $$ begin alter publication supabase_realtime add table public.clients;        exception when others then null; end $$;
+do $$ begin alter publication supabase_realtime add table public.sources;        exception when others then null; end $$;
+do $$ begin alter publication supabase_realtime add table public.cites;          exception when others then null; end $$;
 
 create or replace function public.notify_change()
 returns trigger language plpgsql security definer set search_path = public as $$
@@ -173,6 +205,7 @@ declare
   v_tricycle uuid;
   v_client   uuid;
   v_cite     uuid;
+  v_cite_id  uuid;
 begin
   if tg_table_name = 'commandes' then
     v_tricycle := (j ->> 'tricycle_id')::uuid;
@@ -180,13 +213,23 @@ begin
     v_cite     := (j ->> 'cite_id')::uuid;
   elsif tg_table_name = 'tricycles' then
     v_tricycle := (j ->> 'id')::uuid;
-    select s.cite_id into v_cite from public.sources s where s.id = (j ->> 'source_id')::uuid;
+  elsif tg_table_name = 'tricycle_cites' then
+    -- Un chauffeur peut couvrir plusieurs cités : ajout/retrait d'une cité ne
+    -- notifie QUE cette cité-là (le tricycle-level ping ci-dessous couvre déjà
+    -- toutes ses cités actuelles pour les modifs prix/statut/etat).
+    v_tricycle := (j ->> 'tricycle_id')::uuid;
+    v_cite     := (j ->> 'cite_id')::uuid;
   elsif tg_table_name = 'clients' then
     v_client := (j ->> 'id')::uuid;
   end if;
 
   begin
-    if v_tricycle is not null then perform realtime.send(jsonb_build_object('at', now()), 'changed', 'tricycle:' || v_tricycle, false); end if;
+    if v_tricycle is not null then
+      perform realtime.send(jsonb_build_object('at', now()), 'changed', 'tricycle:' || v_tricycle, false);
+      for v_cite_id in select cite_id from public.tricycle_cites where tricycle_id = v_tricycle loop
+        perform realtime.send(jsonb_build_object('at', now()), 'changed', 'cite:' || v_cite_id, false);
+      end loop;
+    end if;
     if v_client   is not null then perform realtime.send(jsonb_build_object('at', now()), 'changed', 'client:'   || v_client,   false); end if;
     if v_cite     is not null then perform realtime.send(jsonb_build_object('at', now()), 'changed', 'cite:'     || v_cite,     false); end if;
     perform realtime.send(jsonb_build_object('at', now()), 'changed', 'admin', false);
@@ -201,6 +244,9 @@ create trigger commandes_notify after insert or update or delete on public.comma
   for each row execute function public.notify_change();
 drop trigger if exists tricycles_notify on public.tricycles;
 create trigger tricycles_notify after insert or update or delete on public.tricycles
+  for each row execute function public.notify_change();
+drop trigger if exists tricycle_cites_notify on public.tricycle_cites;
+create trigger tricycle_cites_notify after insert or update or delete on public.tricycle_cites
   for each row execute function public.notify_change();
 drop trigger if exists clients_notify on public.clients;
 create trigger clients_notify after insert or update or delete on public.clients
@@ -229,11 +275,12 @@ create or replace function public._chauffeur_profil(p_id uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
     'id', t.id, 'nom', t.nom, 'telephone', t.telephone, 'status', t.status, 'etat', t.etat,
-    'prix_1000', t.prix_1000, 'statut', t.statut,
-    'source_nom', s.nom, 'cite_id', ci.id, 'cite_nom', ci.nom)
+    'prix_1000', t.prix_1000, 'statut', t.statut, 'source_nom', s.nom,
+    'cites', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'nom', c.nom) order by c.nom)
+                        from public.tricycle_cites tc join public.cites c on c.id = tc.cite_id
+                        where tc.tricycle_id = t.id), '[]'::jsonb))
   from public.tricycles t
-  join public.sources s  on s.id  = t.source_id
-  join public.cites   ci on ci.id = s.cite_id
+  left join public.sources s on s.id = t.source_id
   where t.id = p_id
 $$;
 
@@ -389,7 +436,11 @@ begin
   return jsonb_build_object('token', v_token, 'profile', public._client_profil(v_id));
 end $$;
 
-create or replace function public.inscrire_chauffeur(p_nom text, p_tel text, p_source uuid, p_pin text, p_prix int)
+-- p_cites : au moins une cité (obligatoire, c'est ce qui détermine quels clients
+-- le voient) — mais plusieurs sont permises, un chauffeur peut livrer plusieurs
+-- cités à la fois. p_source est facultatif (NULL) : un chauffeur qui ne fixe pas
+-- de forage précis puise "un peu partout" dans ses cités.
+create or replace function public.inscrire_chauffeur(p_nom text, p_tel text, p_cites uuid[], p_source uuid, p_pin text, p_prix int)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_nom text := btrim(coalesce(p_nom, ''));
@@ -401,12 +452,21 @@ begin
   if length(v_tel) < 8 or length(v_tel) > 16 then raise exception 'TEL_INVALIDE'; end if;
   if p_pin is null or p_pin !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
   if p_prix is null or p_prix not between 100 and 50000 then raise exception 'PRIX_INVALIDE'; end if;
-  if not exists (select 1 from public.sources where id = p_source) then raise exception 'SOURCE_INTROUVABLE'; end if;
+  if p_cites is null or array_length(p_cites, 1) is null then raise exception 'CITE_INTROUVABLE'; end if;
+  if exists (select 1 from unnest(p_cites) x(id) where not exists (select 1 from public.cites where id = x.id)) then
+    raise exception 'CITE_INTROUVABLE';
+  end if;
+  if p_source is not null and not exists (select 1 from public.sources where id = p_source and cite_id = any(p_cites)) then
+    raise exception 'SOURCE_INTROUVABLE';
+  end if;
   if exists (select 1 from public.admins where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
   if exists (select 1 from public.tricycles where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
 
   insert into public.tricycles (id, nom, telephone, source_id, prix_1000, statut, pin_hash, session_hash)
   values (v_id, v_nom, v_tel, p_source, p_prix, 'IMPAYE', public._hash_secret(v_id, p_pin), public._hash_token(v_token));
+
+  insert into public.tricycle_cites (tricycle_id, cite_id)
+  select distinct v_id, x.id from unnest(p_cites) x(id);
 
   return jsonb_build_object('token', v_token, 'profile', public._chauffeur_profil(v_id));
 end $$;
@@ -426,8 +486,9 @@ language sql stable security definer set search_path = public as $$
          (select count(*)::int from public.commandes c where c.tricycle_id = t.id and c.status in ('EN_ATTENTE', 'EN_COURS')),
          t.prix_1000
   from public.tricycles t
-  join public.sources s on s.id = t.source_id
-  where s.cite_id = p_cite and t.status = 'DISPO' and t.statut <> 'BLOQUE'
+  left join public.sources s on s.id = t.source_id
+  where t.status = 'DISPO' and t.statut <> 'BLOQUE'
+    and exists (select 1 from public.tricycle_cites tc where tc.tricycle_id = t.id and tc.cite_id = p_cite)
   order by 6, t.nom
 $$;
 
@@ -486,7 +547,7 @@ language sql stable security definer set search_path = public as $$
          ci.nom, s.nom
   from public.commandes c
   join public.tricycles t on t.id = c.tricycle_id
-  join public.sources   s on s.id = t.source_id
+  left join public.sources   s on s.id = t.source_id
   join public.cites    ci on ci.id = c.cite_id
   where c.id = p_id
 $$;
@@ -506,7 +567,7 @@ language sql stable security definer set search_path = public as $$
          ci.nom, s.nom
   from public.commandes c
   join public.tricycles t on t.id = c.tricycle_id
-  join public.sources   s on s.id = t.source_id
+  left join public.sources   s on s.id = t.source_id
   join public.cites    ci on ci.id = c.cite_id
   where c.client_id = public._auth_client(p_tel, p_token) and c.status in ('EN_ATTENTE', 'EN_COURS')
   order by c.created_at desc limit 1
@@ -599,7 +660,10 @@ begin
   return jsonb_build_object(
     'cites', (select coalesce(jsonb_agg(to_jsonb(x) order by x.nom), '[]'::jsonb) from public.cites x),
     'sources', (select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) from public.sources x),
-    'tricycles', (select coalesce(jsonb_agg(to_jsonb(x) - 'pin_hash' - 'session_hash' - 'pin_essais' - 'pin_bloque_jusqua' - 'created_at'), '[]'::jsonb)
+    'tricycles', (select coalesce(jsonb_agg(
+                    (to_jsonb(x) - 'pin_hash' - 'session_hash' - 'pin_essais' - 'pin_bloque_jusqua' - 'created_at')
+                    || jsonb_build_object('cite_ids', coalesce((select jsonb_agg(tc.cite_id) from public.tricycle_cites tc where tc.tricycle_id = x.id), '[]'::jsonb))
+                  ), '[]'::jsonb)
                   from public.tricycles x),
     'clients', (select coalesce(jsonb_agg(to_jsonb(x) - 'pin_hash' - 'session_hash' - 'pin_essais' - 'pin_bloque_jusqua' - 'created_at'), '[]'::jsonb)
                 from public.clients x),

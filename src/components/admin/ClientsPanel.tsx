@@ -3,11 +3,13 @@
 import { api } from "@/lib/api";
 import { daysLeft, jour } from "@/lib/format";
 import type { AdminData, CompteStatut, Creds } from "@/lib/types";
+import { useConfirm } from "../CustomModal";
 import { Badge, ErrorBox, StatutBadge, Table, TableBtn, Td, Th } from "../ui";
 import { Panel, useMutation } from "./shared";
 
 export default function ClientsPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, error } = useMutation(reload);
+  const { confirm, ConfirmDialog } = useConfirm();
   const citeNom = (id: string) => data.cites.find((c) => c.id === id)?.nom ?? "?";
 
   function setStatut(id: string, statut: CompteStatut) {
@@ -18,8 +20,13 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
     void run(() => api.admin.prolongerAbonnement(creds, id));
   }
 
-  function remove(nom: string, id: string) {
-    if (!confirm(`Supprimer définitivement le compte de ${nom} ?\n\nSon historique de commandes sera supprimé.`)) return;
+  async function remove(nom: string, id: string) {
+    const ok = await confirm("Son historique de commandes sera supprimé.", {
+      title: `Supprimer définitivement le compte de ${nom} ?`,
+      danger: true,
+      confirmLabel: "Supprimer",
+    });
+    if (!ok) return;
     void run(() => api.admin.remove(creds, "clients", id));
   }
 
@@ -101,6 +108,7 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
         </tbody>
       </Table>
       {data.clients.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun client inscrit.</p>}
+      {ConfirmDialog}
     </Panel>
   );
 }

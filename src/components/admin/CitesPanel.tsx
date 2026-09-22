@@ -4,11 +4,13 @@ import { AnimatePresence } from "framer-motion";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import type { AdminData, Cite, Creds } from "@/lib/types";
+import { useConfirm } from "../CustomModal";
 import { Btn, ErrorBox, Field } from "../ui";
 import { Panel, Row, SmallBtn, useMutation } from "./shared";
 
 export default function CitesPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, busy, error, setError } = useMutation(reload);
+  const { confirm, ConfirmDialog } = useConfirm();
   const [editing, setEditing] = useState<Cite | null>(null);
   const [nom, setNom] = useState("");
 
@@ -25,9 +27,14 @@ export default function CitesPanel({ creds, data, reload }: { creds: Creds; data
     if (await run(() => api.admin.save(creds, "cites", editing?.id ?? null, { nom: value }))) reset();
   }
 
-  function remove(c: Cite) {
+  async function remove(c: Cite) {
     const nbSources = data.sources.filter((s) => s.cite_id === c.id).length;
-    if (!confirm(`Supprimer « ${c.nom} » ?\n\nCela supprime aussi ses ${nbSources} source(s), leurs chauffeurs, ses clients et toutes les commandes liées.`)) return;
+    const ok = await confirm(`Cela supprime aussi ses ${nbSources} source(s), leurs chauffeurs, ses clients et toutes les commandes liées.`, {
+      title: `Supprimer « ${c.nom} » ?`,
+      danger: true,
+      confirmLabel: "Supprimer",
+    });
+    if (!ok) return;
     void run(() => api.admin.remove(creds, "cites", c.id));
   }
 
@@ -84,6 +91,7 @@ export default function CitesPanel({ creds, data, reload }: { creds: Creds; data
         </AnimatePresence>
         {data.cites.length === 0 && <p className="font-semibold text-ink/60">Aucune cité. Crée la première ci-dessus.</p>}
       </ul>
+      {ConfirmDialog}
     </Panel>
   );
 }

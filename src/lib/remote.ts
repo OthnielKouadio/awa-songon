@@ -79,6 +79,7 @@ export const remote: Backend = {
     const r = await rpc<{ token: string; profile: ChauffeurProfile }>("inscrire_chauffeur", {
       p_nom: i.nom,
       p_tel: i.tel,
+      p_cites: i.citeIds,
       p_source: i.sourceId,
       p_pin: i.pin,
       p_prix: i.prix,

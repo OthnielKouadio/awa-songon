@@ -3,19 +3,17 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import GeoPrompt from "@/components/GeoPrompt";
+import ChauffeurSignupForm from "@/components/auth/ChauffeurSignupForm";
+import ClientSignupForm from "@/components/auth/ClientSignupForm";
 import { Icon, type IconName } from "@/components/icons";
-import { Badge, Btn, ErrorBox, Field, Logo, PinInput, Spinner } from "@/components/ui";
+import { Badge, Btn, ErrorBox, Field, Logo, Spinner } from "@/components/ui";
 import { api } from "@/lib/api";
 import { errorMessage } from "@/lib/errors";
-import { byNom, normalizePhone, onlyDigits, PRIX_DEFAUT, PRIX_MAX, PRIX_MIN, QUANTITE_L } from "@/lib/format";
-import { saveSession } from "@/lib/session";
-import type { Cite, Role, Source } from "@/lib/types";
-import { useGeo } from "@/lib/useGeo";
+import { normalizePhone } from "@/lib/format";
+import { HOME, saveSession } from "@/lib/session";
+import type { Role } from "@/lib/types";
 
 type Choix = "client" | "chauffeur";
-
-const HOME: Record<Role, string> = { client: "/", chauffeur: "/chauffeur", admin: "/admin" };
 
 const CARDS: { role: Choix; icon: IconName; title: string; text: string }[] = [
   { role: "client", icon: "home", title: "Je suis client", text: "Commande de l'eau pour ton lot." },
@@ -150,58 +148,23 @@ function ClientAuth({ onSession }: { onSession: (role: Role) => void }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [tel, setTel] = useState("");
   const [secret, setSecret] = useState("");
-  const [nom, setNom] = useState("");
-  const [citeId, setCiteId] = useState("");
-  const [lot, setLot] = useState("");
-  const [pin, setPin] = useState("");
-  const [pin2, setPin2] = useState("");
-  const [cites, setCites] = useState<Cite[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const geo = useGeo();
   const signup = mode === "signup";
-
-  useEffect(() => {
-    api
-      .fetchCites()
-      .then((c) => setCites([...c].sort(byNom)))
-      .catch((e) => setError(errorMessage(e)));
-  }, []);
 
   function switchMode(m: "login" | "signup") {
     setMode(m);
     setError("");
-    setPin("");
-    setPin2("");
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (signup) {
-      if (pin.length !== 4) return setError("Ton code doit faire 4 chiffres.");
-      if (pin !== pin2) return setError("Les deux codes ne sont pas identiques.");
-      if (!citeId) return setError("Choisis ta cité.");
-      if (!lot.trim()) return setError("Entre ton numéro de lot.");
-    }
     setBusy(true);
     try {
-      if (signup) {
-        const s = await api.inscrireClient({
-          nom,
-          tel: normalizePhone(tel),
-          citeId,
-          lot,
-          pin,
-          gps: geo.coords ? { lat: geo.coords.lat, long: geo.coords.lng } : null,
-        });
-        saveSession(s.creds);
-        onSession("client");
-      } else {
-        const r = await api.login("client", normalizePhone(tel), secret);
-        saveSession(r.session.creds);
-        onSession(r.role); // un identifiant admin saisi ici redirige quand même vers /admin
-      }
+      const r = await api.login("client", normalizePhone(tel), secret);
+      saveSession(r.session.creds);
+      onSession(r.role); // un identifiant admin saisi ici redirige quand même vers /admin
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);
@@ -214,63 +177,19 @@ function ClientAuth({ onSession }: { onSession: (role: Role) => void }) {
       <h1 className="title-lg mt-4 !text-3xl sm:!text-4xl">{signup ? "Crée ton compte" : "Content de te revoir"}</h1>
       <AuthTabs mode={mode} onChange={switchMode} />
 
-      <form onSubmit={submit} className="brut space-y-5 p-5">
-        <AnimatePresence initial={false}>
-          {signup && (
-            <motion.div key="nom" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="-m-1 overflow-hidden p-1">
-              <Field label="Ton nom">
-                <input className="field" placeholder="Fatou" autoComplete="name" maxLength={40} value={nom} onChange={(e) => setNom(e.target.value)} required />
-              </Field>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <Field label="Ton numéro de téléphone">
-          <input className="field" type="tel" inputMode="tel" autoComplete="tel" placeholder="07 00 00 00 00" value={tel} onChange={(e) => setTel(e.target.value)} required />
-        </Field>
-
-        <AnimatePresence initial={false}>
-          {signup && (
-            <motion.div key="cite-lot" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="-m-1 space-y-5 overflow-hidden p-1">
-              <Field label="Ta cité">
-                <select className="field" value={citeId} onChange={(e) => setCiteId(e.target.value)} required>
-                  <option value="">— Choisir ma cité —</option>
-                  {cites.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.nom}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Ton numéro de lot">
-                <input className="field" placeholder="Ex : 45" maxLength={20} value={lot} onChange={(e) => setLot(e.target.value)} required />
-              </Field>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {signup ? (
-          <>
-            <Field label="Crée ton code PIN (4 chiffres)" hint="Retiens-le : c'est lui qui protège ton compte.">
-              <PinInput value={pin} onChange={setPin} autoComplete="new-password" />
-            </Field>
-            <Field label="Confirme ton code">
-              <PinInput value={pin2} onChange={setPin2} autoComplete="new-password" />
-            </Field>
-          </>
-        ) : (
+      {signup ? (
+        <ClientSignupForm onSession={onSession} />
+      ) : (
+        <form onSubmit={submit} className="brut space-y-5 p-5">
+          <Field label="Ton numéro de téléphone">
+            <input className="field" type="tel" inputMode="tel" autoComplete="tel" placeholder="07 00 00 00 00" value={tel} onChange={(e) => setTel(e.target.value)} required />
+          </Field>
           <SecretLoginField value={secret} onChange={setSecret} />
-        )}
-
-        {error && <ErrorBox>{error}</ErrorBox>}
-
-        <Btn type="submit" variant="ink" size="lg" className="w-full" disabled={busy || !tel.trim() || (signup ? pin.length !== 4 : !secret)}>
-          {busy ? "Un instant…" : signup ? "Créer mon compte" : "Entrer"} {!busy && <Icon name="arrow" size={20} />}
-        </Btn>
-      </form>
-
-      {signup && (
-        <GeoPrompt open={geo.shouldPrompt} onAccept={geo.request} onDismiss={geo.dismissPrompt} />
+          {error && <ErrorBox>{error}</ErrorBox>}
+          <Btn type="submit" variant="ink" size="lg" className="w-full" disabled={busy || !tel.trim() || !secret}>
+            {busy ? "Un instant…" : "Entrer"} {!busy && <Icon name="arrow" size={20} />}
+          </Btn>
+        </form>
       )}
     </div>
   );
@@ -282,54 +201,23 @@ function ChauffeurAuth({ onSession }: { onSession: (role: Role) => void }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [tel, setTel] = useState("");
   const [secret, setSecret] = useState("");
-  const [nom, setNom] = useState("");
-  const [sourceId, setSourceId] = useState("");
-  const [prix, setPrix] = useState(String(PRIX_DEFAUT));
-  const [pin, setPin] = useState("");
-  const [pin2, setPin2] = useState("");
-  const [cites, setCites] = useState<Cite[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const signup = mode === "signup";
 
-  useEffect(() => {
-    Promise.all([api.fetchCites(), api.fetchSources()])
-      .then(([c, s]) => {
-        setCites([...c].sort(byNom));
-        setSources([...s].sort(byNom));
-      })
-      .catch((e) => setError(errorMessage(e)));
-  }, []);
-
   function switchMode(m: "login" | "signup") {
     setMode(m);
     setError("");
-    setPin("");
-    setPin2("");
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (signup) {
-      if (pin.length !== 4) return setError("Ton code doit faire 4 chiffres.");
-      if (pin !== pin2) return setError("Les deux codes ne sont pas identiques.");
-      if (!sourceId) return setError("Choisis ta source.");
-      const p = Number(prix);
-      if (!Number.isFinite(p) || p < PRIX_MIN || p > PRIX_MAX) return setError("Entre un prix valide (de 100 à 50 000 FCFA).");
-    }
     setBusy(true);
     try {
-      if (signup) {
-        const s = await api.inscrireChauffeur({ nom, tel: normalizePhone(tel), sourceId, pin, prix: Number(prix) });
-        saveSession(s.creds);
-        onSession("chauffeur");
-      } else {
-        const r = await api.login("chauffeur", normalizePhone(tel), secret);
-        saveSession(r.session.creds);
-        onSession(r.role); // un identifiant admin saisi ici redirige quand même vers /admin
-      }
+      const r = await api.login("chauffeur", normalizePhone(tel), secret);
+      saveSession(r.session.creds);
+      onSession(r.role); // un identifiant admin saisi ici redirige quand même vers /admin
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);
@@ -342,66 +230,20 @@ function ChauffeurAuth({ onSession }: { onSession: (role: Role) => void }) {
       <h1 className="title-lg mt-4 !text-3xl sm:!text-4xl">{signup ? "Crée ton compte" : "Content de te revoir"}</h1>
       <AuthTabs mode={mode} onChange={switchMode} />
 
-      <form onSubmit={submit} className="brut space-y-5 p-5">
-        <AnimatePresence initial={false}>
-          {signup && (
-            <motion.div key="nom" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="-m-1 overflow-hidden p-1">
-              <Field label="Ton nom">
-                <input className="field" placeholder="Kader" autoComplete="name" maxLength={40} value={nom} onChange={(e) => setNom(e.target.value)} required />
-              </Field>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <Field label="Ton numéro de téléphone">
-          <input className="field" type="tel" inputMode="tel" autoComplete="tel" placeholder="07 00 00 00 00" value={tel} onChange={(e) => setTel(e.target.value)} required />
-        </Field>
-
-        <AnimatePresence initial={false}>
-          {signup && (
-            <motion.div key="source-prix" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="-m-1 space-y-5 overflow-hidden p-1">
-              <Field label="Ta source" hint="Le forage où tu remplis ton tricycle.">
-                <select className="field" value={sourceId} onChange={(e) => setSourceId(e.target.value)} required>
-                  <option value="">— Choisir ma source —</option>
-                  {cites.map((c) => (
-                    <optgroup key={c.id} label={c.nom}>
-                      {sources
-                        .filter((s) => s.cite_id === c.id)
-                        .map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.nom}
-                          </option>
-                        ))}
-                    </optgroup>
-                  ))}
-                </select>
-              </Field>
-              <Field label={`Ton prix pour ${QUANTITE_L}L (FCFA)`} hint="C'est le prix que les clients verront. Tu pourras le changer plus tard.">
-                <input className="field" inputMode="numeric" pattern="[0-9]*" placeholder="2500" value={prix} onChange={(e) => setPrix(onlyDigits(e.target.value, 5))} required />
-              </Field>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {signup ? (
-          <>
-            <Field label="Crée ton code PIN (4 chiffres)" hint="Retiens-le : c'est lui qui protège ton compte.">
-              <PinInput value={pin} onChange={setPin} autoComplete="new-password" />
-            </Field>
-            <Field label="Confirme ton code">
-              <PinInput value={pin2} onChange={setPin2} autoComplete="new-password" />
-            </Field>
-          </>
-        ) : (
+      {signup ? (
+        <ChauffeurSignupForm onSession={onSession} />
+      ) : (
+        <form onSubmit={submit} className="brut space-y-5 p-5">
+          <Field label="Ton numéro de téléphone">
+            <input className="field" type="tel" inputMode="tel" autoComplete="tel" placeholder="07 00 00 00 00" value={tel} onChange={(e) => setTel(e.target.value)} required />
+          </Field>
           <SecretLoginField value={secret} onChange={setSecret} />
-        )}
-
-        {error && <ErrorBox>{error}</ErrorBox>}
-
-        <Btn type="submit" variant="ink" size="lg" className="w-full" disabled={busy || !tel.trim() || (signup ? pin.length !== 4 : !secret)}>
-          {busy ? "Un instant…" : signup ? "Créer mon compte" : "Entrer"} {!busy && <Icon name="arrow" size={20} />}
-        </Btn>
-      </form>
+          {error && <ErrorBox>{error}</ErrorBox>}
+          <Btn type="submit" variant="ink" size="lg" className="w-full" disabled={busy || !tel.trim() || !secret}>
+            {busy ? "Un instant…" : "Entrer"} {!busy && <Icon name="arrow" size={20} />}
+          </Btn>
+        </form>
+      )}
     </div>
   );
 }

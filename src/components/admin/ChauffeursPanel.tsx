@@ -5,24 +5,30 @@ import { Fragment, useState } from "react";
 import { api } from "@/lib/api";
 import { formatFcfa, heure, QUANTITE_L } from "@/lib/format";
 import type { AdminData, CompteStatut, Creds } from "@/lib/types";
+import { useConfirm } from "../CustomModal";
 import { Icon } from "../icons";
 import { Badge, ErrorBox, StatutBadge, Table, TableBtn, Td, Th } from "../ui";
 import { Panel, useMutation } from "./shared";
 
 export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, error } = useMutation(reload);
+  const { confirm, ConfirmDialog } = useConfirm();
   const [expanded, setExpanded] = useState<string | null>(null);
-  const sourceLabel = (id: string) => {
-    const s = data.sources.find((x) => x.id === id);
-    return s ? `${data.cites.find((c) => c.id === s.cite_id)?.nom ?? "?"} · ${s.nom}` : "?";
-  };
+  const citesLabel = (ids: string[]) =>
+    ids.map((id) => data.cites.find((c) => c.id === id)?.nom ?? "?").join(", ") || "—";
+  const sourceLabel = (id: string | null) => (id && data.sources.find((x) => x.id === id)?.nom) || "—";
 
   function setStatut(id: string, statut: CompteStatut) {
     void run(() => api.admin.setStatut(creds, "tricycles", id, statut));
   }
 
-  function remove(nom: string, id: string) {
-    if (!confirm(`Supprimer définitivement le compte de ${nom} ?\n\nSes commandes (historique compris) seront supprimées.`)) return;
+  async function remove(nom: string, id: string) {
+    const ok = await confirm("Ses commandes (historique compris) seront supprimées.", {
+      title: `Supprimer définitivement le compte de ${nom} ?`,
+      danger: true,
+      confirmLabel: "Supprimer",
+    });
+    if (!ok) return;
     void run(() => api.admin.remove(creds, "tricycles", id));
   }
 
@@ -38,6 +44,7 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
           <tr>
             <Th>Nom</Th>
             <Th>Téléphone</Th>
+            <Th>Cités</Th>
             <Th>Source</Th>
             <Th>Prix {QUANTITE_L}L</Th>
             <Th>Dispo</Th>
@@ -61,6 +68,7 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
                     )}
                   </Td>
                   <Td>{t.telephone}</Td>
+                  <Td>{citesLabel(t.cite_ids)}</Td>
                   <Td>{sourceLabel(t.source_id)}</Td>
                   <Td>{formatFcfa(t.prix_1000)}</Td>
                   <Td>
@@ -93,7 +101,7 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
                 </tr>
                 {expanded === t.id && (
                   <tr>
-                    <td colSpan={7} className="border-b border-ink/10 bg-mist px-4 py-3">
+                    <td colSpan={8} className="border-b border-ink/10 bg-mist px-4 py-3">
                       <CommandesInline commandes={commandes} />
                     </td>
                   </tr>
@@ -104,6 +112,7 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
         </tbody>
       </Table>
       {data.tricycles.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun chauffeur inscrit.</p>}
+      {ConfirmDialog}
     </Panel>
   );
 }

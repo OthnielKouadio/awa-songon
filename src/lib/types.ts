@@ -19,12 +19,15 @@ export type Tricycle = {
   id: string;
   nom: string;
   telephone: string;
-  source_id: string;
+  /** Facultative : un chauffeur qui n'en choisit pas puise "un peu partout". */
+  source_id: string | null;
   status: TricycleStatus;
   etat: TricycleEtat;
   /** Prix fixé par le chauffeur pour 1000 L, en FCFA. */
   prix_1000: number;
   statut: CompteStatut;
+  /** Cités où ce chauffeur est visible des clients (plusieurs possibles). */
+  cite_ids: string[];
 };
 
 export type Client = {
@@ -60,8 +63,8 @@ export type Commande = {
 export type TricycleDispo = {
   id: string;
   nom: string;
-  source_id: string;
-  source_nom: string;
+  source_id: string | null;
+  source_nom: string | null;
   etat: TricycleEtat;
   file_count: number;
   prix_1000: number;
@@ -81,7 +84,7 @@ export type Suivi = {
   chauffeur_tel: string;
   etat: TricycleEtat;
   cite_nom: string;
-  source_nom: string;
+  source_nom: string | null;
 };
 
 export type ChauffeurProfile = {
@@ -92,9 +95,10 @@ export type ChauffeurProfile = {
   etat: TricycleEtat;
   prix_1000: number;
   statut: CompteStatut;
-  source_nom: string;
-  cite_id: string;
-  cite_nom: string;
+  /** Facultatif : le chauffeur peut ne pas avoir fixé de forage précis. */
+  source_nom: string | null;
+  /** Plusieurs cités possibles : un chauffeur peut en livrer plusieurs à la fois. */
+  cites: Cite[];
 };
 
 export type ChauffeurCommande = Pick<
@@ -154,7 +158,16 @@ export type InscriptionClient = {
   pin: string;
   gps?: { lat: number; long: number } | null;
 };
-export type InscriptionChauffeur = { nom: string; tel: string; sourceId: string; pin: string; prix: number };
+export type InscriptionChauffeur = {
+  nom: string;
+  tel: string;
+  /** Au moins une cité obligatoire (plusieurs possibles). */
+  citeIds: string[];
+  /** Facultatif : le forage précis où il puise l'eau. */
+  sourceId: string | null;
+  pin: string;
+  prix: number;
+};
 
 /** Contrat commun : implémenté par Supabase (remote.ts) et par le mode démo (mock.ts). */
 export interface Backend {

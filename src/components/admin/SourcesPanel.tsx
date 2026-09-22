@@ -4,6 +4,8 @@ import { AnimatePresence } from "framer-motion";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import type { AdminData, Creds, Source } from "@/lib/types";
+import { CustomSelect } from "../CustomSelect";
+import { useConfirm } from "../CustomModal";
 import { Icon } from "../icons";
 import { Btn, ErrorBox, Field } from "../ui";
 import { Panel, Row, SmallBtn, useMutation } from "./shared";
@@ -12,6 +14,7 @@ const EMPTY = { nom: "", cite_id: "", lat: "", long: "" };
 
 export default function SourcesPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, busy, error, setError } = useMutation(reload);
+  const { confirm, ConfirmDialog } = useConfirm();
   const [editing, setEditing] = useState<Source | null>(null);
   const [form, setForm] = useState(EMPTY);
   const citeNom = (id: string) => data.cites.find((c) => c.id === id)?.nom ?? "?";
@@ -44,9 +47,14 @@ export default function SourcesPanel({ creds, data, reload }: { creds: Creds; da
     if (await run(() => api.admin.save(creds, "sources", editing?.id ?? null, row))) reset();
   }
 
-  function remove(s: Source) {
+  async function remove(s: Source) {
     const n = data.tricycles.filter((t) => t.source_id === s.id).length;
-    if (!confirm(`Supprimer « ${s.nom} » ?\n\nCela supprime aussi ses ${n} chauffeur(s) et leurs commandes.`)) return;
+    const ok = await confirm(`Cela supprime aussi ses ${n} chauffeur(s) et leurs commandes.`, {
+      title: `Supprimer « ${s.nom} » ?`,
+      danger: true,
+      confirmLabel: "Supprimer",
+    });
+    if (!ok) return;
     void run(() => api.admin.remove(creds, "sources", s.id));
   }
 
@@ -57,14 +65,12 @@ export default function SourcesPanel({ creds, data, reload }: { creds: Creds; da
           <input className="field" placeholder="Forage Nord" value={form.nom} onChange={(e) => setForm({ ...form, nom: e.target.value })} required />
         </Field>
         <Field label="Cité">
-          <select className="field" value={form.cite_id} onChange={(e) => setForm({ ...form, cite_id: e.target.value })} required>
-            <option value="">— Choisir —</option>
-            {data.cites.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.nom}
-              </option>
-            ))}
-          </select>
+          <CustomSelect
+            ariaLabel="Cité"
+            value={form.cite_id}
+            onChange={(v) => setForm({ ...form, cite_id: v })}
+            options={data.cites.map((c) => ({ value: c.id, label: c.nom }))}
+          />
         </Field>
         <Field label="Latitude (facultatif)">
           <input className="field" inputMode="decimal" placeholder="5.3861" value={form.lat} onChange={(e) => setForm({ ...form, lat: e.target.value })} />
@@ -124,6 +130,7 @@ export default function SourcesPanel({ creds, data, reload }: { creds: Creds; da
         </AnimatePresence>
         {data.sources.length === 0 && <p className="font-semibold text-ink/60">Aucun forage.</p>}
       </ul>
+      {ConfirmDialog}
     </Panel>
   );
 }

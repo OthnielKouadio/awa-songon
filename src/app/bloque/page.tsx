@@ -55,7 +55,7 @@ export default function BloquePage() {
           <LinkBtn href={WHATSAPP} target="_blank" rel="noopener noreferrer" variant="ink" size="lg" className="mt-6 w-full">
             <Icon name="phone" size={20} /> J&apos;ai payé, prévenir sur WhatsApp
           </LinkBtn>
-          <Btn variant="white" className="mt-3 w-full" onClick={() => router.replace("/")}>
+          <Btn variant="white" className="mt-3 w-full" onClick={() => router.replace("/dashboard")}>
             Réessayer
           </Btn>
         </motion.div>

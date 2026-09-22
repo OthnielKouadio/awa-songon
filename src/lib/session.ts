@@ -1,8 +1,11 @@
 "use client";
 
-import type { Creds } from "./types";
+import type { Creds, Role } from "./types";
 
 const KEY = "awa:session:v4";
+
+/** Tableau de bord de chaque rôle une fois connecté. */
+export const HOME: Record<Role, string> = { client: "/dashboard", chauffeur: "/chauffeur", admin: "/admin" };
 
 /** Persiste la session active (un seul rôle connecté à la fois dans ce navigateur). */
 export function saveSession(creds: Creds) {

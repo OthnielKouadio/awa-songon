@@ -84,10 +84,11 @@ function seed(): DB {
     id: string,
     nom: string,
     telephone: string,
-    source_id: string,
+    source_id: string | null,
     status: "DISPO" | "OFF",
     etat: "A_LA_SOURCE" | "EN_ROUTE",
     prix_1000: number,
+    cite_ids: string[],
     statut: CompteStatut = "PAYE"
   ): MockTricycle => ({
     id,
@@ -98,6 +99,7 @@ function seed(): DB {
     etat,
     prix_1000,
     statut,
+    cite_ids,
     pin: "1234",
     token: null,
     essais: 0,
@@ -167,10 +169,11 @@ function seed(): DB {
       { id: s4, nom: "Forage Sud", cite_id: c3, lat: 5.3745, long: -4.2698 },
     ],
     tricycles: [
-      tri(kaderId, "Kader", "0700000001", s1, "DISPO", "A_LA_SOURCE", 2500),
-      tri(yaoId, "Yao", "0700000002", s2, "DISPO", "EN_ROUTE", 2500),
-      tri(moussaId, "Moussa", "0700000003", s3, "DISPO", "A_LA_SOURCE", 3000),
-      tri(koffiId, "Koffi", "0700000004", s4, "OFF", "A_LA_SOURCE", 2000),
+      // Kader livre 2 cités à la fois : démo du multi-cité.
+      tri(kaderId, "Kader", "0700000001", s1, "DISPO", "A_LA_SOURCE", 2500, [c1, c2]),
+      tri(yaoId, "Yao", "0700000002", s2, "DISPO", "EN_ROUTE", 2500, [c1]),
+      tri(moussaId, "Moussa", "0700000003", s3, "DISPO", "A_LA_SOURCE", 3000, [c2]),
+      tri(koffiId, "Koffi", "0700000004", s4, "OFF", "A_LA_SOURCE", 2000, [c3]),
     ],
     clients: [
       cli(fatouId, "Fatou", "0701020304", c1, "12", 5.3868, -4.2705, "PAYE", 25),
@@ -214,8 +217,7 @@ function tx<T>(fn: (db: DB) => T): T {
 const actives = (db: DB, tricycleId: string) => db.commandes.filter((c) => c.tricycle_id === tricycleId && ACTIVE.includes(c.status));
 
 function chauffeurProfile(db: DB, t: MockTricycle): ChauffeurProfile {
-  const s = db.sources.find((x) => x.id === t.source_id)!;
-  const c = db.cites.find((x) => x.id === s.cite_id)!;
+  const s = db.sources.find((x) => x.id === t.source_id);
   return {
     id: t.id,
     nom: t.nom,
@@ -224,9 +226,8 @@ function chauffeurProfile(db: DB, t: MockTricycle): ChauffeurProfile {
     etat: t.etat,
     prix_1000: t.prix_1000,
     statut: t.statut,
-    source_nom: s.nom,
-    cite_id: c.id,
-    cite_nom: c.nom,
+    source_nom: s?.nom ?? null,
+    cites: t.cite_ids.map((id) => db.cites.find((c) => c.id === id)).filter((c): c is Cite => !!c),
   };
 }
 
@@ -246,7 +247,7 @@ function clientProfile(db: DB, cl: MockClient): ClientProfile {
 
 function suivi(db: DB, c: Commande): Suivi {
   const t = db.tricycles.find((x) => x.id === c.tricycle_id)!;
-  const s = db.sources.find((x) => x.id === t.source_id)!;
+  const s = db.sources.find((x) => x.id === t.source_id);
   const ci = db.cites.find((x) => x.id === c.cite_id)!;
   return {
     id: c.id,
@@ -262,7 +263,7 @@ function suivi(db: DB, c: Commande): Suivi {
     chauffeur_tel: t.telephone,
     etat: t.etat,
     cite_nom: ci.nom,
-    source_nom: s.nom,
+    source_nom: s?.nom ?? null,
   };
 }
 
@@ -319,17 +320,19 @@ export const mock: Backend = {
   async fetchTricyclesDispo(citeId) {
     const db = read();
     return db.tricycles
-      .map((t) => ({ t, s: db.sources.find((s) => s.id === t.source_id) }))
-      .filter(({ t, s }) => s?.cite_id === citeId && t.status === "DISPO" && t.statut !== "BLOQUE")
-      .map(({ t, s }) => ({
-        id: t.id,
-        nom: t.nom,
-        source_id: s!.id,
-        source_nom: s!.nom,
-        etat: t.etat,
-        file_count: actives(db, t.id).length,
-        prix_1000: t.prix_1000,
-      }))
+      .filter((t) => t.cite_ids.includes(citeId) && t.status === "DISPO" && t.statut !== "BLOQUE")
+      .map((t) => {
+        const s = db.sources.find((x) => x.id === t.source_id);
+        return {
+          id: t.id,
+          nom: t.nom,
+          source_id: s?.id ?? null,
+          source_nom: s?.nom ?? null,
+          etat: t.etat,
+          file_count: actives(db, t.id).length,
+          prix_1000: t.prix_1000,
+        };
+      })
       .sort((a, b) => a.file_count - b.file_count || a.nom.localeCompare(b.nom));
   },
 
@@ -341,7 +344,6 @@ export const mock: Backend = {
       if (!t || t.status !== "DISPO" || t.statut === "BLOQUE") return fail("TRICYCLE_INDISPONIBLE");
       if (db.commandes.some((x) => x.client_id === cl.id && ACTIVE.includes(x.status))) return fail("TROP_DE_COMMANDES");
 
-      const source = db.sources.find((s) => s.id === t.source_id)!;
       const gpsIn = c.gps && Math.abs(c.gps.lat) <= 90 && Math.abs(c.gps.long) <= 180 ? c.gps : null;
       const lat = gpsIn?.lat ?? cl.lat;
       const long = gpsIn?.long ?? cl.long;
@@ -350,7 +352,7 @@ export const mock: Backend = {
         id: uid(),
         client_id: cl.id,
         tricycle_id: t.id,
-        cite_id: source.cite_id,
+        cite_id: cl.cite_id,
         lot_numero: cl.lot_numero,
         prix: t.prix_1000,
         position_file: actives(db, t.id).length + 1,
@@ -451,11 +453,13 @@ export const mock: Backend = {
     return tx((db) => {
       const nom = i.nom.trim();
       const tel = normalizePhone(i.tel);
+      const citeIds = [...new Set(i.citeIds)];
       if (!nom || nom.length > 40) return fail("NOM_INVALIDE");
       if (tel.length < 8 || tel.length > 16) return fail("TEL_INVALIDE");
       if (!/^[0-9]{4}$/.test(i.pin)) return fail("PIN_INVALIDE");
       if (!prixValide(i.prix)) return fail("PRIX_INVALIDE");
-      if (!db.sources.some((s) => s.id === i.sourceId)) return fail("SOURCE_INTROUVABLE");
+      if (citeIds.length === 0 || !citeIds.every((id) => db.cites.some((c) => c.id === id))) return fail("CITE_INTROUVABLE");
+      if (i.sourceId && !db.sources.some((s) => s.id === i.sourceId && citeIds.includes(s.cite_id))) return fail("SOURCE_INTROUVABLE");
       if (db.admin.telephone === tel) return fail("DEJA_INSCRIT");
       if (db.tricycles.some((t) => t.telephone === tel)) return fail("DEJA_INSCRIT");
 
@@ -468,6 +472,7 @@ export const mock: Backend = {
         etat: "A_LA_SOURCE",
         prix_1000: i.prix,
         statut: "IMPAYE",
+        cite_ids: citeIds,
         pin: i.pin,
         token: token(),
         essais: 0,
@@ -576,7 +581,7 @@ export const mock: Backend = {
       return {
         cites: db.cites,
         sources: db.sources,
-        tricycles: db.tricycles.map(({ id, nom, telephone, source_id, status, etat, prix_1000, statut }) => ({
+        tricycles: db.tricycles.map(({ id, nom, telephone, source_id, status, etat, prix_1000, statut, cite_ids }) => ({
           id,
           nom,
           telephone,
@@ -585,6 +590,7 @@ export const mock: Backend = {
           etat,
           prix_1000,
           statut,
+          cite_ids,
         })),
         clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, subscription_ends_at }) => ({
           id,
@@ -643,7 +649,11 @@ export const mock: Backend = {
           db.sources = db.sources.filter((s) => s.id !== id);
         } else {
           const sourceIds = db.sources.filter((s) => s.cite_id === id).map((s) => s.id);
-          dropTricycles(db.tricycles.filter((t) => sourceIds.includes(t.source_id)).map((t) => t.id));
+          // Un chauffeur dont la SOURCE choisie appartient à cette cité est supprimé
+          // (comme avant) ; un chauffeur seulement RATTACHÉ à cette cité (parmi
+          // d'autres) la perd juste — il reste visible dans ses autres cités.
+          dropTricycles(db.tricycles.filter((t) => t.source_id != null && sourceIds.includes(t.source_id)).map((t) => t.id));
+          db.tricycles.forEach((t) => (t.cite_ids = t.cite_ids.filter((cid) => cid !== id)));
           db.sources = db.sources.filter((s) => s.cite_id !== id);
           db.clients = db.clients.filter((cl) => cl.cite_id !== id);
           db.commandes = db.commandes.filter((cm) => cm.cite_id !== id);

@@ -2,20 +2,32 @@
 
 Next.js 14 (App Router) · Tailwind · Framer Motion · Supabase (DB + Realtime) · Leaflet + OpenStreetMap (gratuit, aucune clé Google).
 
-## Entrée unique : `/login`
+## Pages publiques : `/`, `/inscription`, `/login`
 
-Il n'y a **aucun lien visible** entre les espaces. Tout le monde arrive sur `/login`, choisit **« Je suis client »** ou **« Je suis chauffeur »**, puis se connecte ou s'inscrit (téléphone + code à 4 chiffres qu'il choisit lui-même).
+`/` est la vitrine (« L'eau potable à Songon »), avec deux cartes **« Je suis Client »** / **« Je suis Chauffeur »** qui envoient vers `/inscription?role=client` ou `/inscription?role=chauffeur`, plus un lien **« J'ai déjà un compte »** vers `/login`. Si une session existe déjà dans le navigateur, `/` redirige directement vers le bon tableau de bord.
 
-L'admin **n'a pas d'écran dédié** : il se connecte avec **son numéro + son mot de passe**, sur n'importe lequel des deux onglets (client ou chauffeur) — le compte est reconnu par son numéro et redirige automatiquement vers `/admin`. Aucun lien `/admin` n'est jamais affiché.
+`/inscription?role=...` porte le formulaire d'inscription dédié (nom, téléphone, cité/source, PIN) pour le rôle choisi. `/login` reste l'entrée unique pour se **connecter** (et garde aussi ses propres onglets Connexion/Inscription, pour qui y arrive directement) : on y choisit **« Je suis client »** ou **« Je suis chauffeur »**, puis on se connecte avec son téléphone + son code à 4 chiffres.
+
+L'admin **n'a pas d'écran dédié** : il se connecte avec **son numéro + son mot de passe**, sur `/login`, sur n'importe lequel des deux onglets (client ou chauffeur) — le compte est reconnu par son numéro et redirige automatiquement vers `/admin`. Aucun lien `/admin` n'est jamais affiché.
 
 | Route | Rôle | Accès |
 |---|---|---|
-| `/login` | Tout le monde | Entrée unique — choix client/chauffeur, connexion ou inscription |
-| `/` | Client | Tableau de bord : tricycles DISPO de sa cité, commande, suivi |
+| `/` | Tout le monde | Vitrine — cartes client/chauffeur vers `/inscription`, lien vers `/login` |
+| `/inscription?role=client\|chauffeur` | Tout le monde | Formulaire d'inscription dédié au rôle choisi |
+| `/login` | Tout le monde | Connexion (et inscription en secours) — choix client/chauffeur |
+| `/dashboard` | Client | Tableau de bord : tricycles DISPO de sa cité, commande, suivi |
 | `/suivi/[id]` | Client | Lien direct de suivi (partageable, sans compte) |
 | `/bloque` | Client | Abonnement expiré : paiement + WhatsApp (redirection automatique) |
 | `/chauffeur` | Chauffeur | File d'attente, DISPO/OFF, prix, livraisons |
 | `/admin` | Admin | Dashboard, cités, forages, chauffeurs, clients, commandes, sécurité |
+
+## Thème et composants custom
+
+Palette 100 % bleue via les tokens Tailwind `paper`/`ink`/`mist`/`azur`/`sky`/`danger` (fond `#F7FBFF`, bordures `#0A1931`, cartes `#EDF6FF`, bordure 2px, coins 24px, ombre dure `4px 4px 0px`) — appliquée partout, y compris les menus déroulants et les popups de confirmation.
+
+**Aucun `<select>`, `alert()` ni `confirm()` natif du navigateur.** Deux composants custom les remplacent partout dans l'appli (formulaires d'inscription, panneaux admin) :
+- [`CustomSelect`](src/components/CustomSelect.tsx) : menu déroulant en boutons (`onClick`, fiable sur mobile), forme pilule, options ou groupes d'options (ex. sources groupées par cité).
+- [`CustomModal`](src/components/CustomModal.tsx) : modal thémée, plus un hook `useConfirm()` qui remplace `window.confirm()` par une popup `await confirm(message)`.
 
 **Admin par défaut (démo et Supabase) : téléphone `0566036825`, mot de passe `admin123`.**
 Change-le dès la première connexion, onglet **Sécurité** de `/admin`.
@@ -49,6 +61,7 @@ L'onglet **Sécurité** de `/admin` affiche un bouton pour réinitialiser les do
 
 - **Comptes obligatoires** pour client et chauffeur (nom, téléphone, PIN à 4 chiffres qu'ils choisissent). Cité et lot sont fixés à l'inscription du client — plus besoin de les ressaisir à chaque commande.
 - Un client d'une cité ne voit **que** les tricycles DISPO de **sa** cité.
+- **Un chauffeur choisit une ou plusieurs cités à l'inscription** (relation plusieurs-à-plusieurs, table `tricycle_cites`) : il est visible par les clients de chacune. La **source (le forage) est facultative** — un chauffeur qui n'en fixe pas puise "un peu partout" dans ses cités ; s'il en choisit une, elle doit appartenir à l'une de ses cités.
 - Un tricycle reste visible et commandable **même EN_ROUTE** ; il ne disparaît que s'il passe OFF (ou si l'admin le bloque).
 - **Une seule quantité : 1000 L.** 1 commande = 1 voyage = 1000 L.
 - **Prix** : chaque chauffeur fixe son prix pour 1000 L (100 à 50 000 FCFA), modifiable à tout moment. Le prix est **figé dans la commande** : un changement de tarif n'affecte pas les commandes déjà passées.
@@ -72,7 +85,7 @@ Gérés **uniquement par l'admin**, jamais par le titulaire du compte.
 Chaque client a une date d'expiration (`subscription_ends_at`), distincte du statut PAYE/IMPAYE/BLOQUE :
 
 - **30 jours offerts à l'inscription.** Aucune action requise.
-- Le tableau de bord client (`/`) vérifie cette date à chaque chargement ; si elle est dépassée, redirection automatique vers **`/bloque`** — message de blocage + montant à payer (1000 FCFA au numéro admin) + bouton WhatsApp pré-rempli + bouton « Réessayer ».
+- Le tableau de bord client (`/dashboard`) vérifie cette date à chaque chargement ; si elle est dépassée, redirection automatique vers **`/bloque`** — message de blocage + montant à payer (1000 FCFA au numéro admin) + bouton WhatsApp pré-rempli + bouton « Réessayer ».
 - Badge discret en haut du tableau de bord : **« Il te reste X jours »** — vert au-delà de 3 jours, orange à 3 jours ou moins.
 - Onglet **Clients** de l'admin : colonnes « Expire le » et « Jours restants » (rouge si expiré), bouton **+30 jours** sur chaque ligne — prolonge à partir de `max(date actuelle, maintenant) + 30 jours` (un renouvellement anticipé s'ajoute à la fin de l'abonnement en cours, il ne le remplace pas) et débloque automatiquement le client à son prochain chargement.
 - Une commande déjà en cours au moment de l'expiration reste visible et livrable normalement (le blocage empêche seulement une nouvelle visite du tableau de bord tant que l'abonnement n'est pas renouvelé).

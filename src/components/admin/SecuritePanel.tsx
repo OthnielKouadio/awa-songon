@@ -5,11 +5,13 @@ import { api, isDemo } from "@/lib/api";
 import { errorMessage } from "@/lib/errors";
 import { resetMock } from "@/lib/mock";
 import type { Creds } from "@/lib/types";
+import { useConfirm } from "../CustomModal";
 import { Icon } from "../icons";
 import { Btn, ErrorBox, Field } from "../ui";
 import { Panel } from "./shared";
 
 export default function SecuritePanel({ creds, reload }: { creds: Creds; reload: () => Promise<void> }) {
+  const { confirm, ConfirmDialog } = useConfirm();
   const [nouveau, setNouveau] = useState("");
   const [confirme, setConfirme] = useState("");
   const [busy, setBusy] = useState(false);
@@ -65,8 +67,9 @@ export default function SecuritePanel({ creds, reload }: { creds: Creds; reload:
           </p>
           <Btn
             variant="danger"
-            onClick={() => {
-              if (!confirm("Réinitialiser toutes les données de démo ? Tu seras déconnecté.")) return;
+            onClick={async () => {
+              const ok = await confirm("Tu seras déconnecté.", { title: "Réinitialiser toutes les données de démo ?", danger: true, confirmLabel: "Réinitialiser" });
+              if (!ok) return;
               resetMock();
               void reload();
             }}
@@ -75,6 +78,7 @@ export default function SecuritePanel({ creds, reload }: { creds: Creds; reload:
           </Btn>
         </div>
       )}
+      {ConfirmDialog}
     </Panel>
   );
 }
