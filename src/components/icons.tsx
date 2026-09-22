@@ -28,6 +28,7 @@ export const ICONS = {
   plus: `<path d="M12 5v14M5 12h14"/>`,
   trash: `<path d="M5 7h14M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2M6.5 7l1 12.5a1.5 1.5 0 0 0 1.5 1.4h6a1.5 1.5 0 0 0 1.5-1.4L17.5 7"/>`,
   users: `<circle cx="8.5" cy="8" r="3.2"/><path d="M2.5 20c.7-3.7 3-5.7 6-5.7s5.3 2 6 5.7"/><circle cx="17" cy="9" r="2.6"/><path d="M15.7 14.4c2.3.4 3.9 2.1 4.5 5.1"/>`,
+  download: `<path d="M12 3.5v11.5M7.5 11l4.5 4.5L16.5 11"/><path d="M4.5 17.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2"/>`,
 } as const;
 
 export type IconName = keyof typeof ICONS;
