@@ -60,6 +60,9 @@ create table if not exists public.clients (
   -- Statut de compte, géré UNIQUEMENT par l'admin (jamais par le client).
   statut        text not null default 'IMPAYE' check (statut in ('PAYE', 'IMPAYE', 'BLOQUE')),
   date_paiement timestamptz,
+  -- Abonnement : 30 jours offerts à l'inscription, prolongé par l'admin (+30 jours).
+  -- Passé cette date, le client est redirigé vers /bloque (indépendant du statut ci-dessus).
+  subscription_ends_at timestamptz not null default (now() + interval '30 days'),
   pin_hash          text not null,
   session_hash      text,
   pin_essais        int not null default 0,
@@ -67,6 +70,9 @@ create table if not exists public.clients (
   created_at        timestamptz not null default now(),
   constraint clients_gps_pair check ((lat is null) = (long is null))
 );
+
+-- Migration (sans effet sur une base neuve, où la colonne existe déjà ci-dessus).
+alter table public.clients add column if not exists subscription_ends_at timestamptz not null default (now() + interval '30 days');
 
 -- Un seul enregistrement en pratique, mais une table plutôt qu'un singleton codé
 -- en dur : ça permet plusieurs comptes admin plus tard sans migration.
@@ -235,7 +241,8 @@ create or replace function public._client_profil(p_id uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
     'id', cl.id, 'nom', cl.nom, 'telephone', cl.telephone,
-    'cite_id', ci.id, 'cite_nom', ci.nom, 'lot_numero', cl.lot_numero, 'statut', cl.statut)
+    'cite_id', ci.id, 'cite_nom', ci.nom, 'lot_numero', cl.lot_numero, 'statut', cl.statut,
+    'subscription_ends_at', cl.subscription_ends_at)
   from public.clients cl
   join public.cites ci on ci.id = cl.cite_id
   where cl.id = p_id
@@ -644,6 +651,18 @@ begin
     update public.clients set statut = p_statut, date_paiement = (case when p_statut = 'PAYE' then now() else date_paiement end) where id = p_id;
   else raise exception 'TABLE_INVALIDE';
   end if;
+end $$;
+
+-- +30 jours d'abonnement à partir de max(date d'expiration actuelle, maintenant) :
+-- un renouvellement anticipé s'ajoute à la fin de l'abonnement en cours, il ne le remplace pas.
+create or replace function public.admin_prolonger_abonnement(p_tel text, p_token text, p_client uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v uuid := public._auth_admin(p_tel, p_token);
+begin
+  update public.clients
+     set subscription_ends_at = greatest(subscription_ends_at, now()) + interval '30 days'
+   where id = p_client;
+  if not found then raise exception 'COMMANDE_INTROUVABLE'; end if;
 end $$;
 
 create or replace function public.admin_change_password(p_tel text, p_token text, p_nouveau text)

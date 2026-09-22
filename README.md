@@ -13,6 +13,7 @@ L'admin **n'a pas d'écran dédié** : il se connecte avec **son numéro + son m
 | `/login` | Tout le monde | Entrée unique — choix client/chauffeur, connexion ou inscription |
 | `/` | Client | Tableau de bord : tricycles DISPO de sa cité, commande, suivi |
 | `/suivi/[id]` | Client | Lien direct de suivi (partageable, sans compte) |
+| `/bloque` | Client | Abonnement expiré : paiement + WhatsApp (redirection automatique) |
 | `/chauffeur` | Chauffeur | File d'attente, DISPO/OFF, prix, livraisons |
 | `/admin` | Admin | Dashboard, cités, forages, chauffeurs, clients, commandes, sécurité |
 
@@ -66,12 +67,23 @@ Gérés **uniquement par l'admin**, jamais par le titulaire du compte.
 - **Chauffeur BLOQUÉ** : repasse OFF automatiquement, disparaît de la liste publique, et ne peut plus se remettre DISPO lui-même tant que l'admin ne le débloque pas.
 - Marquer un client **PAYÉ** enregistre la date de paiement (visible dans l'onglet Clients).
 
+## Abonnement client — 30 jours, indépendant du statut ci-dessus
+
+Chaque client a une date d'expiration (`subscription_ends_at`), distincte du statut PAYE/IMPAYE/BLOQUE :
+
+- **30 jours offerts à l'inscription.** Aucune action requise.
+- Le tableau de bord client (`/`) vérifie cette date à chaque chargement ; si elle est dépassée, redirection automatique vers **`/bloque`** — message de blocage + montant à payer (1000 FCFA au numéro admin) + bouton WhatsApp pré-rempli + bouton « Réessayer ».
+- Badge discret en haut du tableau de bord : **« Il te reste X jours »** — vert au-delà de 3 jours, orange à 3 jours ou moins.
+- Onglet **Clients** de l'admin : colonnes « Expire le » et « Jours restants » (rouge si expiré), bouton **+30 jours** sur chaque ligne — prolonge à partir de `max(date actuelle, maintenant) + 30 jours` (un renouvellement anticipé s'ajoute à la fin de l'abonnement en cours, il ne le remplace pas) et débloque automatiquement le client à son prochain chargement.
+- Une commande déjà en cours au moment de l'expiration reste visible et livrable normalement (le blocage empêche seulement une nouvelle visite du tableau de bord tant que l'abonnement n'est pas renouvelé).
+- Ce mécanisme ne s'applique qu'aux **clients** ; les chauffeurs restent uniquement sur le statut PAYE/IMPAYE/BLOQUE géré manuellement par l'admin, sans date d'expiration.
+
 ## Super admin — le cockpit
 
 - **Dashboard** : nombre de clients, de chauffeurs, commandes du jour, CA estimé du jour, carte globale temps réel.
 - **Cités** / **Forages** : CRUD complet (ajout, renommage, suppression avec confirmation, cascade).
 - **Chauffeurs** : liste avec prix, statut DISPO/OFF, statut PAYE/IMPAYE/BLOQUE, bouton « Commandes » pour voir son historique, suppression définitive.
-- **Clients** : liste avec cité/lot, statut, date de paiement, mêmes actions.
+- **Clients** : liste avec cité/lot, statut, date de paiement, date d'expiration + jours restants, bouton **+30 jours**, mêmes actions.
 - **Commandes** : flux temps réel de toutes les commandes, filtrable par statut.
 - **Sécurité** : changer le mot de passe admin.
 

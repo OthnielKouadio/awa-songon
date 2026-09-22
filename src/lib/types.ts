@@ -37,6 +37,8 @@ export type Client = {
   long: number | null;
   statut: CompteStatut;
   date_paiement: string | null;
+  /** Fin de l'abonnement (30 jours à l'inscription). Passé cette date, redirection vers /bloque. */
+  subscription_ends_at: string;
 };
 
 export type Commande = {
@@ -111,6 +113,7 @@ export type ClientProfile = {
   cite_nom: string;
   lot_numero: string;
   statut: CompteStatut;
+  subscription_ends_at: string;
 };
 
 export type AdminProfile = { telephone: string };
@@ -183,6 +186,8 @@ export interface Backend {
     save(c: Creds, table: AdminTable, id: string | null, row: Record<string, unknown>): Promise<void>;
     remove(c: Creds, table: AdminTable, id: string): Promise<void>;
     setStatut(c: Creds, table: "tricycles" | "clients", id: string, statut: CompteStatut): Promise<void>;
+    /** +30 jours d'abonnement à partir de max(date d'expiration actuelle, maintenant). */
+    prolongerAbonnement(c: Creds, clientId: string): Promise<void>;
     changerMotDePasse(c: Creds, nouveau: string): Promise<void>;
     /** Notifie à chaque changement. Renvoie la fonction de désabonnement. */
     subscribe(onChange: () => void, onStatus?: (live: boolean) => void): () => void;

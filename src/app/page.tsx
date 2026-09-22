@@ -11,6 +11,7 @@ import TricycleCard from "@/components/TricycleCard";
 import { Badge, Btn, ErrorBox, Logo, Spinner, StatutBadge, Toggle } from "@/components/ui";
 import { api } from "@/lib/api";
 import { AppError, errorMessage } from "@/lib/errors";
+import { daysLeft } from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
 import type { ClientProfile, Creds, Suivi, TricycleDispo } from "@/lib/types";
 import { useGeo } from "@/lib/useGeo";
@@ -54,6 +55,7 @@ export default function ClientPage() {
 const lastKey = (tel: string) => `awa:lastorder:${tel}`;
 
 function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
+  const router = useRouter();
   const [profile, setProfile] = useState<ClientProfile | null>(null);
   const [active, setActive] = useState<Suivi | null | undefined>(undefined);
   const [tricycles, setTricycles] = useState<TricycleDispo[] | null>(null);
@@ -64,6 +66,11 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const load = useCallback(async () => {
     try {
       const p = await api.clientProfil(creds);
+      // Abonnement expiré : on sort avant même de charger la file ou l'historique.
+      if (daysLeft(p.subscription_ends_at) <= 0) {
+        router.replace("/bloque");
+        return;
+      }
       setProfile(p);
 
       let a = await api.clientCommandeActive(creds);
@@ -94,7 +101,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
       if (e instanceof AppError && (e.code === "AUTH" || e.code === "REFUSE")) onLogout();
       else setError(errorMessage(e));
     }
-  }, [creds, onLogout]);
+  }, [creds, onLogout, router]);
 
   useEffect(() => {
     void load();
@@ -203,6 +210,22 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   );
 }
 
+/** "Il te reste X jours" — vert au-delà de 3 jours, orange à partir de 3 jours
+ *  ou moins (le compte n'est bloqué et redirigé vers /bloque qu'à 0 jour). */
+function SubscriptionBadge({ subscriptionEndsAt }: { subscriptionEndsAt: string }) {
+  const days = daysLeft(subscriptionEndsAt);
+  const low = days <= 3;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border-[1.5px] px-3 py-1 text-xs font-bold uppercase tracking-wide ${
+        low ? "border-orange-500 bg-orange-50 text-orange-600" : "border-green-600 bg-green-50 text-green-700"
+      }`}
+    >
+      Il te reste {days} jour{days > 1 ? "s" : ""}
+    </span>
+  );
+}
+
 function Wrap({
   onLogout,
   profile,
@@ -227,6 +250,7 @@ function Wrap({
             {profile.cite_nom} · Lot {profile.lot_numero}
           </Badge>
           <StatutBadge statut={profile.statut} />
+          <SubscriptionBadge subscriptionEndsAt={profile.subscription_ends_at} />
         </div>
       )}
 

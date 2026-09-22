@@ -122,6 +122,7 @@ export const remote: Backend = {
 
     remove: (c, table, id) => rpc("admin_remove", { ...auth(c), p_table: table, p_id: id }),
     setStatut: (c, table, id, statut: CompteStatut) => rpc("admin_set_statut", { ...auth(c), p_table: table, p_id: id, p_statut: statut }),
+    prolongerAbonnement: (c, clientId) => rpc("admin_prolonger_abonnement", { ...auth(c), p_client: clientId }),
     changerMotDePasse: (c, nouveau) => rpc("admin_change_password", { ...auth(c), p_nouveau: nouveau }),
 
     subscribe(onChange, onStatus) {

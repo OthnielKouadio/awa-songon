@@ -1,7 +1,7 @@
 "use client";
 
 import { api } from "@/lib/api";
-import { jour } from "@/lib/format";
+import { daysLeft, jour } from "@/lib/format";
 import type { AdminData, CompteStatut, Creds } from "@/lib/types";
 import { Badge, ErrorBox, StatutBadge, Table, TableBtn, Td, Th } from "../ui";
 import { Panel, useMutation } from "./shared";
@@ -12,6 +12,10 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
 
   function setStatut(id: string, statut: CompteStatut) {
     void run(() => api.admin.setStatut(creds, "clients", id, statut));
+  }
+
+  function prolonger(id: string) {
+    void run(() => api.admin.prolongerAbonnement(creds, id));
   }
 
   function remove(nom: string, id: string) {
@@ -35,12 +39,16 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
             <Th>Lot</Th>
             <Th>Statut</Th>
             <Th>Dernier paiement</Th>
+            <Th>Expire le</Th>
+            <Th>Jours restants</Th>
             <Th>Actions</Th>
           </tr>
         </thead>
         <tbody>
           {data.clients.map((c) => {
             const nb = data.commandes.filter((cm) => cm.client_id === c.id).length;
+            const days = daysLeft(c.subscription_ends_at);
+            const expired = days <= 0;
             return (
               <tr key={c.id}>
                 <Td>
@@ -58,8 +66,19 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
                   <StatutBadge statut={c.statut} />
                 </Td>
                 <Td>{c.date_paiement ? jour(c.date_paiement) : "—"}</Td>
+                <Td>{jour(c.subscription_ends_at)}</Td>
+                <Td>
+                  <span
+                    className={`font-bold ${expired ? "text-danger" : days <= 3 ? "text-orange-600" : "text-ink"}`}
+                  >
+                    {expired ? "Expiré" : `${days} j`}
+                  </span>
+                </Td>
                 <Td>
                   <div className="flex flex-wrap gap-1.5">
+                    <TableBtn tone="azur" onClick={() => prolonger(c.id)}>
+                      +30 jours
+                    </TableBtn>
                     {c.statut !== "PAYE" && <TableBtn onClick={() => setStatut(c.id, "PAYE")}>Marquer payé</TableBtn>}
                     {c.statut !== "IMPAYE" && <TableBtn onClick={() => setStatut(c.id, "IMPAYE")}>Marquer impayé</TableBtn>}
                     {c.statut === "BLOQUE" ? (

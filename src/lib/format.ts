@@ -65,3 +65,11 @@ export const STATUT_LABEL: Record<CompteStatut, string> = {
   IMPAYE: "Impayé",
   BLOQUE: "Bloqué",
 };
+
+/** Jours restants avant expiration (arrondi au jour supérieur, peut être négatif/nul si expiré). */
+export function daysLeft(subscriptionEndsAt: string): number {
+  return Math.ceil((new Date(subscriptionEndsAt).getTime() - Date.now()) / 86400000);
+}
+
+export const NUMERO_ABONNEMENT = "0566036825";
+export const PRIX_ABONNEMENT = 1000;

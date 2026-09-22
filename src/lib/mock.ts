@@ -61,6 +61,7 @@ function uid(): string {
 }
 const token = () => uid().replace(/-/g, "") + uid().replace(/-/g, "");
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60000).toISOString();
+const daysFromNow = (d: number) => new Date(Date.now() + d * 86400000).toISOString();
 const prixValide = (p: unknown): p is number => typeof p === "number" && Number.isFinite(p) && p >= PRIX_MIN && p <= PRIX_MAX;
 
 function seed(): DB {
@@ -110,7 +111,8 @@ function seed(): DB {
     lot_numero: string,
     lat: number | null,
     long: number | null,
-    statut: CompteStatut = "PAYE"
+    statut: CompteStatut = "PAYE",
+    subscriptionDays = 30
   ): MockClient => ({
     id,
     nom,
@@ -121,6 +123,7 @@ function seed(): DB {
     long,
     statut,
     date_paiement: statut === "PAYE" ? minutesAgo(60 * 24 * 3) : null,
+    subscription_ends_at: daysFromNow(subscriptionDays),
     pin: "1234",
     token: null,
     essais: 0,
@@ -170,9 +173,9 @@ function seed(): DB {
       tri(koffiId, "Koffi", "0700000004", s4, "OFF", "A_LA_SOURCE", 2000),
     ],
     clients: [
-      cli(fatouId, "Fatou", "0701020304", c1, "12", 5.3868, -4.2705, "PAYE"),
-      cli(issaId, "Issa", "0705060708", c1, "7", null, null, "IMPAYE"),
-      cli(ayaId, "Aya", "0709101112", c1, "21", 5.3852, -4.2671, "PAYE"),
+      cli(fatouId, "Fatou", "0701020304", c1, "12", 5.3868, -4.2705, "PAYE", 25),
+      cli(issaId, "Issa", "0705060708", c1, "7", null, null, "IMPAYE", 2), // badge orange (≤3 j) pour la démo
+      cli(ayaId, "Aya", "0709101112", c1, "21", 5.3852, -4.2671, "PAYE", 15),
     ],
     commandes: [
       cmd(fatouId, kaderId, c1, "12", 2500, 1, "EN_ATTENTE", 5.3868, -4.2705, 25),
@@ -229,7 +232,16 @@ function chauffeurProfile(db: DB, t: MockTricycle): ChauffeurProfile {
 
 function clientProfile(db: DB, cl: MockClient): ClientProfile {
   const c = db.cites.find((x) => x.id === cl.cite_id)!;
-  return { id: cl.id, nom: cl.nom, telephone: cl.telephone, cite_id: c.id, cite_nom: c.nom, lot_numero: cl.lot_numero, statut: cl.statut };
+  return {
+    id: cl.id,
+    nom: cl.nom,
+    telephone: cl.telephone,
+    cite_id: c.id,
+    cite_nom: c.nom,
+    lot_numero: cl.lot_numero,
+    statut: cl.statut,
+    subscription_ends_at: cl.subscription_ends_at,
+  };
 }
 
 function suivi(db: DB, c: Commande): Suivi {
@@ -424,6 +436,7 @@ export const mock: Backend = {
         long: gps?.long ?? null,
         statut: "IMPAYE",
         date_paiement: null,
+        subscription_ends_at: daysFromNow(30),
         pin: i.pin,
         token: token(),
         essais: 0,
@@ -573,7 +586,7 @@ export const mock: Backend = {
           prix_1000,
           statut,
         })),
-        clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement }) => ({
+        clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, subscription_ends_at }) => ({
           id,
           nom,
           telephone,
@@ -583,6 +596,7 @@ export const mock: Backend = {
           long,
           statut,
           date_paiement,
+          subscription_ends_at,
         })),
         commandes: [...db.commandes].sort((a, b) => b.created_at.localeCompare(a.created_at)),
       };
@@ -652,6 +666,16 @@ export const mock: Backend = {
           cl!.statut = statut;
           if (statut === "PAYE") cl!.date_paiement = new Date().toISOString();
         }
+      });
+    },
+
+    async prolongerAbonnement(c, clientId) {
+      tx((db) => {
+        authAdmin(db, c);
+        const cl = db.clients.find((x) => x.id === clientId);
+        if (!cl) return fail("COMMANDE_INTROUVABLE");
+        const base = Math.max(new Date(cl.subscription_ends_at).getTime(), Date.now());
+        cl.subscription_ends_at = new Date(base + 30 * 86400000).toISOString();
       });
     },
 
