@@ -1,8 +1,8 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import ChauffeurSignupForm from "@/components/auth/ChauffeurSignupForm";
 import ClientSignupForm from "@/components/auth/ClientSignupForm";
 import { Icon, type IconName } from "@/components/icons";
@@ -21,8 +21,18 @@ const CARDS: { role: Choix; icon: IconName; title: string; text: string }[] = [
 ];
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<main className="mx-auto flex min-h-dvh max-w-md items-center justify-center px-4"><Spinner /></main>}>
+      <LoginContent />
+    </Suspense>
+  );
+}
+
+function LoginContent() {
   const router = useRouter();
-  const [choix, setChoix] = useState<Choix | null>(null);
+  const params = useSearchParams();
+  const roleParam = params.get("role");
+  const [choix, setChoix] = useState<Choix | null>(roleParam === "client" || roleParam === "chauffeur" ? roleParam : null);
   const [checking, setChecking] = useState(true);
 
   // Déjà connecté (n'importe quel rôle, admin compris) → direct sur son tableau de bord.

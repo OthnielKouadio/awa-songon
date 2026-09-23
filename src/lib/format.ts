@@ -82,6 +82,19 @@ export const SOLDE_MIN = 50;
 /** Un montant de recharge doit être un multiple de ça. */
 export const RECHARGE_MULTIPLE = 50;
 export const NUMERO_RECHARGE = NUMERO_ABONNEMENT;
+export const NUMERO_RECHARGE_2 = "0789855418";
+/** Offerts automatiquement à l'inscription du chauffeur. */
+export const BONUS_INSCRIPTION = 2500;
+/** Montant minimum conseillé pour une recharge Wave (en FCFA = en points). */
+export const RECHARGE_MIN_FCFA = 1000;
+/** Total de points utilisés (cumulé) qui déclenche le bonus fidélité ci-dessous. */
+export const SEUIL_FIDELITE = 5000;
+/** Points offerts automatiquement dès que SEUIL_FIDELITE est atteint. */
+export const BONUS_FIDELITE_POINTS = 50;
+/** Livraisons gratuites obtenues avec le bonus d'inscription (2500 / 50 = 50). */
+export const LIVRAISONS_ESSAI = BONUS_INSCRIPTION / POINTS_PAR_LIVRAISON;
+/** Citernes livrées pour atteindre le seuil de fidélité (5000 / 50 = 100). */
+export const CITERNES_FIDELITE = SEUIL_FIDELITE / POINTS_PAR_LIVRAISON;
 
 /** 1000 → "1 000 pts" */
 export function formatPoints(n: number) {

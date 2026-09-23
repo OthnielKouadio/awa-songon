@@ -64,7 +64,7 @@ export default function PwaInstall() {
             {canInstall ? (
               <>
                 <p className="min-w-0 flex-1 text-sm font-semibold leading-snug">
-                  Installe AWA SONGON sur ton téléphone, comme une vraie appli.
+                  Installe Distribution Eau sur ton téléphone, comme une vraie appli.
                 </p>
                 <button
                   onClick={handleInstall}

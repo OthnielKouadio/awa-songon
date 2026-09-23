@@ -20,6 +20,7 @@ import {
   PRIX_MAX,
   PRIX_MIN,
   QUANTITE_L,
+  RECHARGE_MIN_FCFA,
   SOLDE_MIN,
 } from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
@@ -182,7 +183,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           </span>
           <p className="title-md mt-4">Solde épuisé</p>
           <p className="mt-2 font-medium text-ink/60">
-            Rechargez par Wave au <strong>{NUMERO_RECHARGE}</strong> pour continuer. Minimum 1000F (1000 points).
+            Rechargez par Wave au <strong>{NUMERO_RECHARGE}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
           </p>
           <div className="mt-5 inline-flex items-center gap-2 rounded-full border-[1.5px] border-danger bg-danger/10 px-4 py-2 font-bold text-danger">
             Solde actuel : {formatPoints(profile.solde_points)}

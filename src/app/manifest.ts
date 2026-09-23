@@ -4,8 +4,8 @@ import type { MetadataRoute } from "next";
  *  l'annonce dans le <head> — pas besoin de <link rel="manifest"> manuel. */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "AWA SONGON — Livraison d'eau",
-    short_name: "AWA SONGON",
+    name: "Distribution Eau — Livraison d'eau",
+    short_name: "Distribution Eau",
     description: "Livraison d'eau par tricycle à Songon. Commande, suis, livre.",
     start_url: "/login",
     scope: "/",

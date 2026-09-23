@@ -1,10 +1,10 @@
-# AWA SONGON — Livraison d'eau par tricycle
+# Distribution Eau — Livraison d'eau par tricycle
 
 Next.js 14 (App Router) · Tailwind · Framer Motion · Supabase (DB + Realtime) · Leaflet + OpenStreetMap (gratuit, aucune clé Google).
 
 ## Pages publiques : `/`, `/inscription`, `/login`
 
-`/` est la vitrine (« L'eau potable à Songon »), avec deux cartes **« Je suis Client »** / **« Je suis Chauffeur »** qui envoient vers `/inscription?role=client` ou `/inscription?role=chauffeur`, plus un lien **« J'ai déjà un compte »** vers `/login`. Si une session existe déjà dans le navigateur, `/` redirige directement vers le bon tableau de bord.
+`/` est la vitrine complète : header (« Se connecter » / « S'inscrire » → popup de choix de rôle), hero, étapes client, section chauffeur (bonus d'inscription, recharge, fidélité), tarifs, blocage automatique, FAQ, footer. Les CTA renvoient vers `/inscription?role=client|chauffeur` ; le popup du header peut aussi renvoyer vers `/login?role=client|chauffeur` (le rôle est alors pré-sélectionné, pas besoin de le rechoisir). Si une session existe déjà dans le navigateur, `/` redirige directement vers le bon tableau de bord. Les chiffres du programme de points (2500 offerts, 50/livraison, seuil de fidélité à 5000) viennent de `src/lib/format.ts`, pas de texte codé en dur — ils restent cohérents avec la logique réelle.
 
 `/inscription?role=...` porte le formulaire d'inscription dédié (nom, téléphone, cité/source, PIN) pour le rôle choisi. `/login` reste l'entrée unique pour se **connecter** (et garde aussi ses propres onglets Connexion/Inscription, pour qui y arrive directement) : on y choisit **« Je suis client »** ou **« Je suis chauffeur »**, puis on se connecte avec son téléphone + son code à 4 chiffres.
 
@@ -12,7 +12,7 @@ L'admin **n'a pas d'écran dédié** : il se connecte avec **son numéro + son m
 
 | Route | Rôle | Accès |
 |---|---|---|
-| `/` | Tout le monde | Vitrine — cartes client/chauffeur vers `/inscription`, lien vers `/login` |
+| `/` | Tout le monde | Vitrine complète (hero, étapes, section chauffeur, tarifs, FAQ) — popup de rôle vers `/inscription` ou `/login` |
 | `/inscription?role=client\|chauffeur` | Tout le monde | Formulaire d'inscription dédié au rôle choisi |
 | `/login` | Tout le monde | Connexion (et inscription en secours) — choix client/chauffeur |
 | `/dashboard` | Client | Tableau de bord : tricycles DISPO de sa cité, commande, suivi |

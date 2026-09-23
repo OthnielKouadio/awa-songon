@@ -7,14 +7,14 @@ const sora = Sora({ subsets: ["latin"], variable: "--font-sora", weight: ["600",
 const grotesk = Space_Grotesk({ subsets: ["latin"], variable: "--font-grotesk" });
 
 export const metadata: Metadata = {
-  title: "AWA SONGON — Livraison d'eau par tricycle",
+  title: "Distribution Eau — Livraison d'eau par tricycle",
   description: "De l'eau à ton lot en 2 clics. Commande ton tricycle de Songon.",
   // app/manifest.ts est servi automatiquement sur /manifest.webmanifest et lié
   // dans le <head> par Next.js — pas besoin de l'ajouter ici.
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "AWA SONGON",
+    title: "Distribution Eau",
   },
 };
 
