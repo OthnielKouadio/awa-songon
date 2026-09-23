@@ -42,7 +42,7 @@ npm run dev
 **Ça marche tout de suite, sans `.env`** : sans variables Supabase, l'app tourne en **mode démo**, données dans le `localStorage` du navigateur. Ouvre plusieurs onglets du même navigateur pour voir client/chauffeur/admin interagir en temps réel (les données ne sont **pas partagées entre navigateurs différents** en mode démo — c'est un vrai backend qu'il faut pour ça, voir plus bas).
 
 Comptes de démo (PIN `1234`) :
-- Chauffeurs : Kader `0700000001` (Cité 1, 2 500 FCFA), Yao `0700000002` (Cité 1, 2 500 FCFA), Moussa `0700000003` (Cité 2, 3 000 FCFA), Koffi `0700000004` (Cité 3, OFF).
+- Chauffeurs : Kader `0700000001` (Cité 1 + Cité 2, 2 500 FCFA), Yao `0700000002` (Cité 1, 2 500 FCFA), Moussa `0700000003` (Cité 2, 3 000 FCFA), Koffi `0700000004` (Cité 3, OFF, solde de points épuisé — démo de la page bloquante).
 - Clients : Fatou `0701020304` (Cité 1, lot 12, payé), Issa `0705060708` (Cité 1, lot 7, impayé), Aya `0709101112` (Cité 1, lot 21, payé).
 - Admin : `0566036825` / `admin123`.
 
@@ -91,11 +91,23 @@ Chaque client a une date d'expiration (`subscription_ends_at`), distincte du sta
 - Une commande déjà en cours au moment de l'expiration reste visible et livrable normalement (le blocage empêche seulement une nouvelle visite du tableau de bord tant que l'abonnement n'est pas renouvelé).
 - Ce mécanisme ne s'applique qu'aux **clients** ; les chauffeurs restent uniquement sur le statut PAYE/IMPAYE/BLOQUE géré manuellement par l'admin, sans date d'expiration.
 
+## Points chauffeur — 1 FCFA = 1 point, indépendant du statut PAYE/IMPAYE/BLOQUE
+
+Chaque chauffeur a un solde de points (`solde_points`), distinct du statut PAYE/IMPAYE/BLOQUE et de l'abonnement client ci-dessus :
+
+- **2500 points offerts à l'inscription** (= 50 livraisons gratuites). Aucune action requise. Ensuite, le chauffeur paie (recharge Wave, via l'admin).
+- **Accepter une livraison** (bouton « Je pars livrer ») coûte **50 points** (1 citerne = 1000 L = la seule quantité de cette appli). Refusé si le solde est déjà sous 50 (`SOLDE_INSUFFISANT`).
+- **Sous 50 points**, `is_offline` passe à `true` : le chauffeur disparaît de `tricycles_dispo` (invisible des clients, même s'il est encore marqué DISPO) et ne peut plus repasser DISPO lui-même. Son tableau de bord (`/chauffeur`) affiche alors une page bloquante : « Solde épuisé — Rechargez par Wave au 0566036825 pour continuer. Minimum 1000F (1000 points) » + son solde actuel + bouton d'appel direct.
+- **Fidélité** : chaque déduction incrémente `total_points_utilises` ; dès qu'il atteint **5000**, +50 points sont offerts automatiquement, le compteur repart à 0, et un toast « Bravo ! 1 livraison gratuite offerte (+50 pts) » s'affiche côté chauffeur.
+- **Recharge manuelle** : onglet **Recharges** de l'admin — liste des chauffeurs avec leur solde, champ pour ajouter des points (montant obligatoirement multiple de 50), débloque automatiquement le chauffeur si le solde repasse ≥ 50. Chaque recharge (et chaque déduction/bonus) est loguée dans `points_transactions` — aucune interface ne l'affiche pour l'instant, c'est une traçabilité interne.
+- Pas d'agrégateur de paiement : la recharge Wave est reçue manuellement par l'admin, qui l'enregistre lui-même dans l'appli.
+
 ## Super admin — le cockpit
 
 - **Dashboard** : nombre de clients, de chauffeurs, commandes du jour, CA estimé du jour, carte globale temps réel.
 - **Cités** / **Forages** : CRUD complet (ajout, renommage, suppression avec confirmation, cascade).
-- **Chauffeurs** : liste avec prix, statut DISPO/OFF, statut PAYE/IMPAYE/BLOQUE, bouton « Commandes » pour voir son historique, suppression définitive.
+- **Chauffeurs** : liste avec cités, prix, statut DISPO/OFF, statut PAYE/IMPAYE/BLOQUE, bouton « Commandes » pour voir son historique, suppression définitive.
+- **Recharges** : liste des chauffeurs avec leur solde de points, recharge manuelle après paiement Wave.
 - **Clients** : liste avec cité/lot, statut, date de paiement, date d'expiration + jours restants, bouton **+30 jours**, mêmes actions.
 - **Commandes** : flux temps réel de toutes les commandes, filtrable par statut.
 - **Sécurité** : changer le mot de passe admin.

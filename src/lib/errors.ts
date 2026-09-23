@@ -18,6 +18,9 @@ export const MESSAGES: Record<string, string> = {
   REFUSE: "Action refusée : ton compte n'est pas administrateur.",
   COMPTE_BLOQUE: "Ton compte est bloqué. Contacte l'administrateur.",
   MDP_INVALIDE: "Choisis un mot de passe d'au moins 6 caractères.",
+  SOLDE_INSUFFISANT: "Solde de points insuffisant. Recharge pour continuer.",
+  MONTANT_INVALIDE: "Le montant doit être un multiple de 50.",
+  CHAUFFEUR_INTROUVABLE: "Chauffeur introuvable.",
   RESEAU: "Pas de connexion. Réessaie dans un instant.",
 };
 

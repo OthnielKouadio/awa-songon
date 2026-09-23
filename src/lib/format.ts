@@ -73,3 +73,17 @@ export function daysLeft(subscriptionEndsAt: string): number {
 
 export const NUMERO_ABONNEMENT = "0566036825";
 export const PRIX_ABONNEMENT = 1000;
+
+// ─── Points chauffeur (1 FCFA = 1 point) ───────────────────────────────────
+/** Coût d'une livraison acceptée (1 citerne = 1000 L = cette appli n'a qu'une quantité). */
+export const POINTS_PAR_LIVRAISON = 50;
+/** Sous ce solde, le chauffeur passe is_offline (invisible des clients). */
+export const SOLDE_MIN = 50;
+/** Un montant de recharge doit être un multiple de ça. */
+export const RECHARGE_MULTIPLE = 50;
+export const NUMERO_RECHARGE = NUMERO_ABONNEMENT;
+
+/** 1000 → "1 000 pts" */
+export function formatPoints(n: number) {
+  return `${Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ")} pts`;
+}

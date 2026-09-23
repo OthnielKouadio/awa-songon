@@ -89,7 +89,9 @@ function seed(): DB {
     etat: "A_LA_SOURCE" | "EN_ROUTE",
     prix_1000: number,
     cite_ids: string[],
-    statut: CompteStatut = "PAYE"
+    statut: CompteStatut = "PAYE",
+    solde_points = 2500,
+    is_offline = false
   ): MockTricycle => ({
     id,
     nom,
@@ -100,6 +102,9 @@ function seed(): DB {
     prix_1000,
     statut,
     cite_ids,
+    solde_points,
+    total_points_utilises: 0,
+    is_offline,
     pin: "1234",
     token: null,
     essais: 0,
@@ -173,7 +178,8 @@ function seed(): DB {
       tri(kaderId, "Kader", "0700000001", s1, "DISPO", "A_LA_SOURCE", 2500, [c1, c2]),
       tri(yaoId, "Yao", "0700000002", s2, "DISPO", "EN_ROUTE", 2500, [c1]),
       tri(moussaId, "Moussa", "0700000003", s3, "DISPO", "A_LA_SOURCE", 3000, [c2]),
-      tri(koffiId, "Koffi", "0700000004", s4, "OFF", "A_LA_SOURCE", 2000, [c3]),
+      // Koffi : solde de points épuisé (démo de la page bloquante "Solde épuisé").
+      tri(koffiId, "Koffi", "0700000004", s4, "OFF", "A_LA_SOURCE", 2000, [c3], "PAYE", 20, true),
     ],
     clients: [
       cli(fatouId, "Fatou", "0701020304", c1, "12", 5.3868, -4.2705, "PAYE", 25),
@@ -228,6 +234,9 @@ function chauffeurProfile(db: DB, t: MockTricycle): ChauffeurProfile {
     statut: t.statut,
     source_nom: s?.nom ?? null,
     cites: t.cite_ids.map((id) => db.cites.find((c) => c.id === id)).filter((c): c is Cite => !!c),
+    solde_points: t.solde_points,
+    total_points_utilises: t.total_points_utilises,
+    is_offline: t.is_offline,
   };
 }
 
@@ -320,7 +329,7 @@ export const mock: Backend = {
   async fetchTricyclesDispo(citeId) {
     const db = read();
     return db.tricycles
-      .filter((t) => t.cite_ids.includes(citeId) && t.status === "DISPO" && t.statut !== "BLOQUE")
+      .filter((t) => t.cite_ids.includes(citeId) && t.status === "DISPO" && t.statut !== "BLOQUE" && !t.is_offline)
       .map((t) => {
         const s = db.sources.find((x) => x.id === t.source_id);
         return {
@@ -473,6 +482,10 @@ export const mock: Backend = {
         prix_1000: i.prix,
         statut: "IMPAYE",
         cite_ids: citeIds,
+        // Bonus d'essai à l'inscription : 2500 points = 50 livraisons gratuites.
+        solde_points: 2500,
+        total_points_utilises: 0,
+        is_offline: false,
         pin: i.pin,
         token: token(),
         essais: 0,
@@ -529,6 +542,7 @@ export const mock: Backend = {
     tx((db) => {
       const t = authTricycle(db, c);
       if (status === "DISPO" && t.statut === "BLOQUE") return fail("COMPTE_BLOQUE");
+      if (status === "DISPO" && t.is_offline) return fail("SOLDE_INSUFFISANT");
       t.status = status;
     });
   },
@@ -547,14 +561,31 @@ export const mock: Backend = {
   },
 
   async chauffeurPartir(c) {
-    tx((db) => {
+    // Points (1 FCFA = 1 point) : accepter une livraison = 1 citerne = -50 points.
+    // Sous 50 restants, is_offline passe à true. Fidélité : à 5000 points cumulés
+    // utilisés, +50 points offerts et le compteur repart de zéro.
+    return tx((db) => {
       const t = authTricycle(db, c);
+      if (t.solde_points < 50) return fail("SOLDE_INSUFFISANT");
       const file = actives(db, t.id);
       if (file.some((x) => x.status === "EN_COURS")) return fail("DEJA_EN_COURS");
       const next = file.filter((x) => x.status === "EN_ATTENTE").sort((a, b) => a.position_file - b.position_file)[0];
       if (!next) return fail("FILE_VIDE");
+
       next.status = "EN_COURS";
       t.etat = "EN_ROUTE";
+      t.solde_points -= 50;
+      t.total_points_utilises += 50;
+
+      let bonusFidelite = false;
+      if (t.total_points_utilises >= 5000) {
+        t.solde_points += 50;
+        t.total_points_utilises = 0;
+        bonusFidelite = true;
+      }
+      t.is_offline = t.solde_points < 50;
+
+      return { bonusFidelite, soldePoints: t.solde_points };
     });
   },
 
@@ -581,7 +612,7 @@ export const mock: Backend = {
       return {
         cites: db.cites,
         sources: db.sources,
-        tricycles: db.tricycles.map(({ id, nom, telephone, source_id, status, etat, prix_1000, statut, cite_ids }) => ({
+        tricycles: db.tricycles.map(({ id, nom, telephone, source_id, status, etat, prix_1000, statut, cite_ids, solde_points, total_points_utilises, is_offline }) => ({
           id,
           nom,
           telephone,
@@ -591,6 +622,9 @@ export const mock: Backend = {
           prix_1000,
           statut,
           cite_ids,
+          solde_points,
+          total_points_utilises,
+          is_offline,
         })),
         clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, subscription_ends_at }) => ({
           id,
@@ -686,6 +720,17 @@ export const mock: Backend = {
         if (!cl) return fail("COMMANDE_INTROUVABLE");
         const base = Math.max(new Date(cl.subscription_ends_at).getTime(), Date.now());
         cl.subscription_ends_at = new Date(base + 30 * 86400000).toISOString();
+      });
+    },
+
+    async rechargerPoints(c, tricycleId, montant) {
+      tx((db) => {
+        authAdmin(db, c);
+        if (!Number.isFinite(montant) || montant <= 0 || montant % 50 !== 0) return fail("MONTANT_INVALIDE");
+        const t = db.tricycles.find((x) => x.id === tricycleId);
+        if (!t) return fail("CHAUFFEUR_INTROUVABLE");
+        t.solde_points += montant;
+        if (t.solde_points >= 50) t.is_offline = false;
       });
     },
 

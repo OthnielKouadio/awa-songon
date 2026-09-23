@@ -28,6 +28,12 @@ export type Tricycle = {
   statut: CompteStatut;
   /** Cités où ce chauffeur est visible des clients (plusieurs possibles). */
   cite_ids: string[];
+  /** Points (1 FCFA = 1 point) : 1000 offerts à l'inscription, -50 par livraison acceptée. */
+  solde_points: number;
+  /** Remis à 0 dès qu'il atteint 5000 (déclenche +50 points de fidélité). */
+  total_points_utilises: number;
+  /** true dès que solde_points < 50 : invisible des clients tant qu'il n'est pas rechargé. */
+  is_offline: boolean;
 };
 
 export type Client = {
@@ -99,6 +105,9 @@ export type ChauffeurProfile = {
   source_nom: string | null;
   /** Plusieurs cités possibles : un chauffeur peut en livrer plusieurs à la fois. */
   cites: Cite[];
+  solde_points: number;
+  total_points_utilises: number;
+  is_offline: boolean;
 };
 
 export type ChauffeurCommande = Pick<
@@ -191,7 +200,8 @@ export interface Backend {
   chauffeurSetStatus(c: Creds, status: TricycleStatus): Promise<void>;
   chauffeurSetEtat(c: Creds, etat: TricycleEtat): Promise<void>;
   chauffeurSetPrix(c: Creds, prix: number): Promise<void>;
-  chauffeurPartir(c: Creds): Promise<void>;
+  /** -50 points (1 citerne). Renvoie le solde frais + si le bonus fidélité (5000 pts utilisés) vient d'être gagné. */
+  chauffeurPartir(c: Creds): Promise<{ bonusFidelite: boolean; soldePoints: number }>;
   chauffeurLivrer(c: Creds, commandeId: string): Promise<void>;
 
   admin: {
@@ -201,6 +211,8 @@ export interface Backend {
     setStatut(c: Creds, table: "tricycles" | "clients", id: string, statut: CompteStatut): Promise<void>;
     /** +30 jours d'abonnement à partir de max(date d'expiration actuelle, maintenant). */
     prolongerAbonnement(c: Creds, clientId: string): Promise<void>;
+    /** Recharge manuelle après paiement Wave. Montant multiple de 50 obligatoire ; débloque le chauffeur si le solde repasse ≥ 50. */
+    rechargerPoints(c: Creds, tricycleId: string, montant: number): Promise<void>;
     changerMotDePasse(c: Creds, nouveau: string): Promise<void>;
     /** Notifie à chaque changement. Renvoie la fonction de désabonnement. */
     subscribe(onChange: () => void, onStatus?: (live: boolean) => void): () => void;

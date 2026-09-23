@@ -8,6 +8,7 @@ import CitesPanel from "@/components/admin/CitesPanel";
 import ClientsPanel from "@/components/admin/ClientsPanel";
 import CommandesPanel from "@/components/admin/CommandesPanel";
 import AdminDashboard from "@/components/admin/Dashboard";
+import RechargesPanel from "@/components/admin/RechargesPanel";
 import SecuritePanel from "@/components/admin/SecuritePanel";
 import SourcesPanel from "@/components/admin/SourcesPanel";
 import { Badge, ErrorBox, Logo, PulseDot, Spinner } from "@/components/ui";
@@ -22,6 +23,7 @@ const TABS = [
   { id: "cites", label: "Cités" },
   { id: "sources", label: "Forages" },
   { id: "chauffeurs", label: "Chauffeurs" },
+  { id: "recharges", label: "Recharges" },
   { id: "clients", label: "Clients" },
   { id: "commandes", label: "Commandes" },
   { id: "securite", label: "Sécurité" },
@@ -149,6 +151,7 @@ function Console({ creds }: { creds: Creds }) {
             {tab === "cites" && <CitesPanel creds={creds} data={data} reload={load} />}
             {tab === "sources" && <SourcesPanel creds={creds} data={data} reload={load} />}
             {tab === "chauffeurs" && <ChauffeursPanel creds={creds} data={data} reload={load} />}
+            {tab === "recharges" && <RechargesPanel creds={creds} data={data} reload={load} />}
             {tab === "clients" && <ClientsPanel creds={creds} data={data} reload={load} />}
             {tab === "commandes" && <CommandesPanel data={data} />}
             {tab === "securite" && <SecuritePanel creds={creds} reload={load} />}

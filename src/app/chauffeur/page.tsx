@@ -5,10 +5,23 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import MapLazy from "@/components/MapLazy";
+import { Toast } from "@/components/Toast";
 import { Badge, Btn, CloseButton, ErrorBox, LinkBtn, Logo, Modal, PulseDot, Spinner, StatutBadge } from "@/components/ui";
 import { api } from "@/lib/api";
 import { AppError, errorMessage } from "@/lib/errors";
-import { callLink, formatFcfa, heure, navigationLink, onlyDigits, PRIX_MAX, PRIX_MIN, QUANTITE_L } from "@/lib/format";
+import {
+  callLink,
+  formatFcfa,
+  formatPoints,
+  heure,
+  navigationLink,
+  NUMERO_RECHARGE,
+  onlyDigits,
+  PRIX_MAX,
+  PRIX_MIN,
+  QUANTITE_L,
+  SOLDE_MIN,
+} from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
 import { playNotification, unlockAudio } from "@/lib/sound";
 import type { ChauffeurCommande, ChauffeurProfile, Creds } from "@/lib/types";
@@ -63,6 +76,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const [prixInput, setPrixInput] = useState("");
   const [prixDirty, setPrixDirty] = useState(false);
   const [prixSaved, setPrixSaved] = useState(false);
+  const [bonusToast, setBonusToast] = useState(false);
   const knownIds = useRef<Set<string> | null>(null);
   const soundRef = useRef(true);
   const prixDirtyRef = useRef(false);
@@ -113,6 +127,23 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
     }
   }
 
+  async function partir() {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.chauffeurPartir(creds);
+      await load();
+      if (r.bonusFidelite) {
+        setBonusToast(true);
+        setTimeout(() => setBonusToast(false), 3500);
+      }
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function savePrix(e: React.FormEvent) {
     e.preventDefault();
     const p = Number(prixInput);
@@ -136,6 +167,34 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   if (!profile) return error ? <div className="mt-10"><ErrorBox>{error}</ErrorBox></div> : <Spinner />;
 
+  if (profile.is_offline) {
+    return (
+      <div className="mt-10">
+        <div className="mb-6 flex items-start justify-between gap-3">
+          <h1 className="title-lg">{profile.nom}</h1>
+          <button onClick={onLogout} className="rounded-xl border-brut border-ink bg-white px-3 py-2 text-sm font-bold transition-colors hover:bg-sky">
+            Quitter
+          </button>
+        </div>
+        <div className="brut p-6 text-center">
+          <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-danger/10 text-danger">
+            <Icon name="lock" size={28} />
+          </span>
+          <p className="title-md mt-4">Solde épuisé</p>
+          <p className="mt-2 font-medium text-ink/60">
+            Rechargez par Wave au <strong>{NUMERO_RECHARGE}</strong> pour continuer. Minimum 1000F (1000 points).
+          </p>
+          <div className="mt-5 inline-flex items-center gap-2 rounded-full border-[1.5px] border-danger bg-danger/10 px-4 py-2 font-bold text-danger">
+            Solde actuel : {formatPoints(profile.solde_points)}
+          </div>
+          <LinkBtn href={callLink(NUMERO_RECHARGE)} variant="ink" size="lg" className="mt-6 w-full">
+            <Icon name="phone" size={20} /> Appeler pour recharger
+          </LinkBtn>
+        </div>
+      </div>
+    );
+  }
+
   const dispo = profile.status === "DISPO";
   const bloque = profile.statut === "BLOQUE";
   const enCours = file.find((c) => c.status === "EN_COURS");
@@ -151,8 +210,9 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
             {profile.source_nom ? ` · ${profile.source_nom}` : ""}
           </p>
           <h1 className="title-lg">{profile.nom}</h1>
-          <div className="mt-2">
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <StatutBadge statut={profile.statut} />
+            <Badge tone={profile.solde_points < SOLDE_MIN * 4 ? "danger" : "sky"}>{formatPoints(profile.solde_points)}</Badge>
           </div>
         </div>
         <div className="flex gap-2">
@@ -239,7 +299,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           <Btn variant={aLaSource ? "white" : "azur"} size="lg" disabled={busy || aLaSource} onClick={() => act(() => api.chauffeurSetEtat(creds, "A_LA_SOURCE"))}>
             <Icon name="drop" size={20} /> Je suis à la source
           </Btn>
-          <Btn variant="ink" size="lg" disabled={busy || !premier || !!enCours} onClick={() => act(() => api.chauffeurPartir(creds))}>
+          <Btn variant="ink" size="lg" disabled={busy || !premier || !!enCours} onClick={() => void partir()}>
             <Icon name="truck" size={20} /> Je pars livrer N°{premier?.position_file ?? 1}
           </Btn>
         </div>
@@ -344,6 +404,8 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           </div>
         )}
       </Modal>
+
+      <Toast open={bonusToast}>Bravo ! 1 livraison gratuite offerte (+50 pts)</Toast>
     </div>
   );
 }
