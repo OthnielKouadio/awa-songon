@@ -79,7 +79,7 @@ export function CustomMultiSelect({ values, onChange, options, placeholder = "â€
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.98 }}
             transition={{ type: "spring", stiffness: 420, damping: 32 }}
-            className="absolute z-50 mt-2 max-h-64 w-full overflow-y-auto rounded-2xl border-brut border-ink bg-mist p-1.5 shadow-hard-sm"
+            className="absolute z-[1100] mt-2 max-h-64 w-full overflow-y-auto rounded-2xl border-brut border-ink bg-mist p-1.5 shadow-hard-sm"
           >
             {options.length === 0 && <p className="px-3 py-2 text-sm font-medium text-ink/50">Aucune option.</p>}
             {options.map((o) => {
