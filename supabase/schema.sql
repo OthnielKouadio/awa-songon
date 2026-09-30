@@ -51,13 +51,21 @@ create table if not exists public.tricycles (
   solde_points          int not null default 2500,
   total_points_utilises int not null default 0,
   is_offline            boolean not null default false,
+  -- Position GPS live (watchPosition côté chauffeur, envoyée toutes les 5s via
+  -- chauffeur_set_position) — distincte de sources.lat/long (le forage, fixe)
+  -- et de commandes.lat/long (le lot du client). position_maj sert à juger la
+  -- fraîcheur côté client (au-delà de ~2 min, on ne l'affiche plus).
+  lat            double precision,
+  long           double precision,
+  position_maj   timestamptz,
   -- Le PIN est CHOISI PAR LE CHAUFFEUR à l'inscription. Stocké haché ; la session
   -- utilise ensuite un jeton aléatoire (haché aussi) — le PIN ne circule qu'au login.
   pin_hash          text not null,
   session_hash      text,
   pin_essais        int not null default 0,
   pin_bloque_jusqua timestamptz,
-  created_at        timestamptz not null default now()
+  created_at        timestamptz not null default now(),
+  constraint tricycles_gps_pair check ((lat is null) = (long is null))
 );
 
 -- Migration (sans effet sur une base neuve, où les colonnes existent déjà
@@ -65,18 +73,27 @@ create table if not exists public.tricycles (
 alter table public.tricycles add column if not exists solde_points          int not null default 2500;
 alter table public.tricycles add column if not exists total_points_utilises int not null default 0;
 alter table public.tricycles add column if not exists is_offline            boolean not null default false;
+alter table public.tricycles add column if not exists lat                   double precision;
+alter table public.tricycles add column if not exists long                  double precision;
+alter table public.tricycles add column if not exists position_maj          timestamptz;
 
--- Historique des recharges de points (créé manuellement par l'admin après
--- réception d'un paiement Wave) — utilisé uniquement pour la traçabilité,
--- aucune UI ne le liste pour l'instant.
+-- Historique des recharges/déductions de points (chauffeurs ET clients depuis
+-- le passage au système 100% recharge) — utilisé uniquement pour la
+-- traçabilité, aucune UI ne le liste pour l'instant. tricycle_id/client_id :
+-- exactement un des deux est rempli selon le titulaire du compte (contrainte
+-- ajoutée plus bas, une fois la table clients définie).
 create table if not exists public.points_transactions (
   id          uuid primary key default gen_random_uuid(),
-  tricycle_id uuid not null references public.tricycles(id) on delete cascade,
+  tricycle_id uuid references public.tricycles(id) on delete cascade,
   montant     int  not null,
   type        text not null check (type in ('RECHARGE', 'DEDUCTION', 'BONUS_FIDELITE')),
   created_at  timestamptz not null default now()
 );
 create index if not exists points_transactions_tricycle_idx on public.points_transactions (tricycle_id);
+-- Migration : la colonne tricycle_id était NOT NULL avant que les clients
+-- aient aussi des points — on la rend facultative (client_id la remplace
+-- alors, colonne ajoutée juste après la table clients ci-dessous).
+alter table public.points_transactions alter column tricycle_id drop not null;
 
 -- Plusieurs-à-plusieurs : un chauffeur peut couvrir (et être vu par) plusieurs
 -- cités en même temps, pas une seule.
@@ -99,9 +116,11 @@ create table if not exists public.clients (
   -- Statut de compte, géré UNIQUEMENT par l'admin (jamais par le client).
   statut        text not null default 'IMPAYE' check (statut in ('PAYE', 'IMPAYE', 'BLOQUE')),
   date_paiement timestamptz,
-  -- Abonnement : 30 jours offerts à l'inscription, prolongé par l'admin (+30 jours).
-  -- Passé cette date, le client est redirigé vers /bloque (indépendant du statut ci-dessus).
-  subscription_ends_at timestamptz not null default (now() + interval '30 days'),
+  -- Points (1 FCFA = 1 point) : 1200 offerts à l'inscription, -100 points par
+  -- commande créée (déduits immédiatement, en même temps que les points du
+  -- chauffeur — voir creer_commande). Système 100% recharge, plus d'abonnement
+  -- basé sur une date d'expiration.
+  solde_points int not null default 1200,
   pin_hash          text not null,
   session_hash      text,
   pin_essais        int not null default 0,
@@ -110,8 +129,19 @@ create table if not exists public.clients (
   constraint clients_gps_pair check ((lat is null) = (long is null))
 );
 
--- Migration (sans effet sur une base neuve, où la colonne existe déjà ci-dessus).
-alter table public.clients add column if not exists subscription_ends_at timestamptz not null default (now() + interval '30 days');
+-- Migration (sans effet sur une base neuve, où la colonne existe déjà ci-dessus) :
+-- les clients déjà inscrits reçoivent aussi le solde de départ.
+alter table public.clients add column if not exists solde_points int not null default 1200;
+
+-- points_transactions peut maintenant référencer un client (la table clients
+-- vient d'être définie) ; exactement un des deux titulaires doit être rempli.
+alter table public.points_transactions add column if not exists client_id uuid references public.clients(id) on delete cascade;
+do $$ begin
+  alter table public.points_transactions
+    add constraint points_transactions_titulaire_chk check ((tricycle_id is not null) <> (client_id is not null));
+exception when duplicate_object then null;
+end $$;
+create index if not exists points_transactions_client_idx on public.points_transactions (client_id);
 
 -- Migration : la source du chauffeur devient facultative, et sa cité (unique)
 -- devient plusieurs cités possibles (tricycle_cites). Sur une base existante,
@@ -316,7 +346,7 @@ returns jsonb language sql stable security definer set search_path = public as $
   select jsonb_build_object(
     'id', cl.id, 'nom', cl.nom, 'telephone', cl.telephone,
     'cite_id', ci.id, 'cite_nom', ci.nom, 'lot_numero', cl.lot_numero, 'statut', cl.statut,
-    'subscription_ends_at', cl.subscription_ends_at)
+    'solde_points', cl.solde_points)
   from public.clients cl
   join public.cites ci on ci.id = cl.cite_id
   where cl.id = p_id
@@ -524,6 +554,15 @@ $$;
 
 -- Une commande = un voyage = 1000 L, au prix du chauffeur (figé). Le client doit
 -- être authentifié : on ne fait plus confiance à un numéro déclaré librement.
+--
+-- Points (1 FCFA = 1 point) — système 100% recharge, double déduction atomique
+-- à la CRÉATION de la commande (dès qu'elle est assignée au chauffeur, pas à
+-- l'acceptation de la livraison) :
+--   1. client.solde_points doit être >= 100, sinon SOLDE_INSUFFISANT_CLIENT
+--   2. tricycle.solde_points doit être >= 50, sinon SOLDE_INSUFFISANT
+--   3. client.solde_points -= 100 ; tricycle.solde_points -= 50, dans la même transaction
+--   4. fidélité chauffeur : dès 5000 points cumulés utilisés, +50 points offerts
+--   5. si le solde du chauffeur retombe sous 50, il passe is_offline
 create or replace function public.creer_commande(
   p_tricycle uuid, p_tel text, p_token text,
   p_lat double precision default null, p_long double precision default null
@@ -536,12 +575,16 @@ declare
   v_id  uuid;
   v_lat double precision;
   v_long double precision;
+  v_t_solde   int;
+  v_t_utilise int;
 begin
-  select * into v_client from public.clients where id = v_client_id;
+  select * into v_client from public.clients where id = v_client_id for update;
   if v_client.statut = 'BLOQUE' then raise exception 'COMPTE_BLOQUE'; end if;
+  if v_client.solde_points < 100 then raise exception 'SOLDE_INSUFFISANT_CLIENT'; end if;
 
   select * into v_t from public.tricycles where id = p_tricycle for update;
   if not found or v_t.status <> 'DISPO' or v_t.statut = 'BLOQUE' then raise exception 'TRICYCLE_INDISPONIBLE'; end if;
+  if v_t.solde_points < 50 then raise exception 'SOLDE_INSUFFISANT'; end if;
 
   if exists (select 1 from public.commandes where client_id = v_client_id and status in ('EN_ATTENTE', 'EN_COURS')) then
     raise exception 'TROP_DE_COMMANDES';
@@ -559,22 +602,43 @@ begin
   values (v_client_id, p_tricycle, v_client.cite_id, v_client.lot_numero, v_pos, v_t.prix_1000, v_lat, v_long)
   returning id into v_id;
 
+  -- Déduction client (100 points par commande).
+  update public.clients set solde_points = solde_points - 100 where id = v_client_id;
+  insert into public.points_transactions (client_id, montant, type) values (v_client_id, -100, 'DEDUCTION');
+
+  -- Déduction chauffeur (50 points par commande assignée) + fidélité + passage hors ligne.
+  v_t_solde := v_t.solde_points - 50;
+  v_t_utilise := v_t.total_points_utilises + 50;
+  insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, -50, 'DEDUCTION');
+  if v_t_utilise >= 5000 then
+    v_t_solde := v_t_solde + 50;
+    v_t_utilise := 0;
+    insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, 50, 'BONUS_FIDELITE');
+  end if;
+  update public.tricycles
+     set solde_points = v_t_solde, total_points_utilises = v_t_utilise, is_offline = (v_t_solde < 50)
+   where id = p_tricycle;
+
   return v_id;
 end $$;
 
+-- drop obligatoire (retour changé : ajout des 3 colonnes de position live du
+-- tricycle) — CREATE OR REPLACE seul refuse un changement de type de retour.
 drop function if exists public.suivi_commande(uuid);
 create or replace function public.suivi_commande(p_id uuid)
 returns table (
   id uuid, status text, position_file int, prix int, lot_numero text,
   lat double precision, long double precision, created_at timestamptz,
   tricycle_id uuid, chauffeur_nom text, chauffeur_tel text, etat text,
-  cite_nom text, source_nom text
+  cite_nom text, source_nom text,
+  tricycle_lat double precision, tricycle_long double precision, tricycle_position_maj timestamptz
 )
 language sql stable security definer set search_path = public as $$
   select c.id, c.status, c.position_file, c.prix, c.lot_numero,
          c.lat, c.long, c.created_at,
          t.id, t.nom, t.telephone, t.etat,
-         ci.nom, s.nom
+         ci.nom, s.nom,
+         t.lat, t.long, t.position_maj
   from public.commandes c
   join public.tricycles t on t.id = c.tricycle_id
   left join public.sources   s on s.id = t.source_id
@@ -582,19 +646,23 @@ language sql stable security definer set search_path = public as $$
   where c.id = p_id
 $$;
 
+-- drop obligatoire (même raison que suivi_commande ci-dessus).
+drop function if exists public.client_commande_active(text, text);
 -- Commande active du client connecté (pour son tableau de bord, sans lien secret).
 create or replace function public.client_commande_active(p_tel text, p_token text)
 returns table (
   id uuid, status text, position_file int, prix int, lot_numero text,
   lat double precision, long double precision, created_at timestamptz,
   tricycle_id uuid, chauffeur_nom text, chauffeur_tel text, etat text,
-  cite_nom text, source_nom text
+  cite_nom text, source_nom text,
+  tricycle_lat double precision, tricycle_long double precision, tricycle_position_maj timestamptz
 )
 language sql stable security definer set search_path = public as $$
   select c.id, c.status, c.position_file, c.prix, c.lot_numero,
          c.lat, c.long, c.created_at,
          t.id, t.nom, t.telephone, t.etat,
-         ci.nom, s.nom
+         ci.nom, s.nom,
+         t.lat, t.long, t.position_maj
   from public.commandes c
   join public.tricycles t on t.id = c.tricycle_id
   left join public.sources   s on s.id = t.source_id
@@ -654,47 +722,42 @@ begin
   update public.tricycles set etat = p_etat where id = v;
 end $$;
 
--- Points (1 FCFA = 1 point) : accepter une livraison = 1 citerne = -50 points.
--- Sous 50 restants, le chauffeur passe is_offline (il doit recharger avant de
--- pouvoir en accepter une autre). Fidélité : dès 5000 points cumulés utilisés,
--- 50 points offerts et le compteur repart de zéro. Renvoie de quoi mettre à
--- jour l'UI (solde frais + si le bonus vient d'être gagné, pour le toast).
--- drop obligatoire : le type de retour change (void -> jsonb), CREATE OR REPLACE seul refuse ça.
-drop function if exists public.chauffeur_partir(text, text);
+-- Position GPS live (watchPosition côté chauffeur, appelée ~ toutes les 5s).
+-- Déclenche le trigger tricycles_notify existant : ping tricycle:<id> + toutes
+-- ses cité:<id>, donc le client suivant sa commande se rafraîchit tout seul.
+create or replace function public.chauffeur_set_position(p_tel text, p_token text, p_lat double precision, p_long double precision)
+returns void language plpgsql security definer set search_path = public as $$
+declare v uuid := public._auth_tricycle(p_tel, p_token);
+begin
+  if p_lat is null or p_long is null or p_lat not between -90 and 90 or p_long not between -180 and 180 then
+    raise exception 'POSITION_INVALIDE';
+  end if;
+  update public.tricycles set lat = p_lat, long = p_long, position_maj = now() where id = v;
+end $$;
+
+-- Les points (1 FCFA = 1 point, -50 par commande) sont désormais déduits dès la
+-- CRÉATION de la commande (creer_commande), pas ici : au moment où le chauffeur
+-- clique « Je pars livrer », la commande est déjà assignée et déjà payée en
+-- points. Renvoie quand même jsonb (solde inchangé, bonus_fidelite toujours
+-- false) pour ne pas casser le contrat frontend déjà en place.
 create or replace function public.chauffeur_partir(p_tel text, p_token text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
-  v          uuid := public._auth_tricycle(p_tel, p_token);
-  v_cmd      uuid;
-  v_solde    int;
-  v_utilise  int;
-  v_bonus    boolean := false;
+  v     uuid := public._auth_tricycle(p_tel, p_token);
+  v_cmd uuid;
+  v_solde int;
 begin
   select solde_points into v_solde from public.tricycles where id = v for update;
   if exists (select 1 from public.commandes where tricycle_id = v and status = 'EN_COURS') then
     raise exception 'DEJA_EN_COURS';
   end if;
-  if v_solde < 50 then raise exception 'SOLDE_INSUFFISANT'; end if;
   select c.id into v_cmd from public.commandes c where c.tricycle_id = v and c.status = 'EN_ATTENTE' order by c.position_file limit 1;
   if v_cmd is null then raise exception 'FILE_VIDE'; end if;
 
-  v_solde := v_solde - 50;
-  select total_points_utilises + 50 into v_utilise from public.tricycles where id = v;
-  insert into public.points_transactions (tricycle_id, montant, type) values (v, -50, 'DEDUCTION');
-
-  if v_utilise >= 5000 then
-    v_solde := v_solde + 50;
-    v_utilise := 0;
-    v_bonus := true;
-    insert into public.points_transactions (tricycle_id, montant, type) values (v, 50, 'BONUS_FIDELITE');
-  end if;
-
   update public.commandes set status = 'EN_COURS' where id = v_cmd;
-  update public.tricycles
-     set etat = 'EN_ROUTE', solde_points = v_solde, total_points_utilises = v_utilise, is_offline = (v_solde < 50)
-   where id = v;
+  update public.tricycles set etat = 'EN_ROUTE' where id = v;
 
-  return jsonb_build_object('bonus_fidelite', v_bonus, 'solde_points', v_solde);
+  return jsonb_build_object('bonus_fidelite', false, 'solde_points', v_solde);
 end $$;
 
 create or replace function public.chauffeur_livrer(p_tel text, p_token text, p_commande uuid)
@@ -777,30 +840,37 @@ begin
   end if;
 end $$;
 
--- +30 jours d'abonnement à partir de max(date d'expiration actuelle, maintenant) :
--- un renouvellement anticipé s'ajoute à la fin de l'abonnement en cours, il ne le remplace pas.
-create or replace function public.admin_prolonger_abonnement(p_tel text, p_token text, p_client uuid)
-returns void language plpgsql security definer set search_path = public as $$
-declare v uuid := public._auth_admin(p_tel, p_token);
-begin
-  update public.clients
-     set subscription_ends_at = greatest(subscription_ends_at, now()) + interval '30 days'
-   where id = p_client;
-  if not found then raise exception 'COMMANDE_INTROUVABLE'; end if;
-end $$;
+-- Nettoyage : abonnement client remplacé par le système de points ci-dessous,
+-- cette fonction n'a plus de raison d'exister (sinon elle traîne, orpheline,
+-- sur les bases déjà migrées).
+drop function if exists public.admin_prolonger_abonnement(text, text, uuid);
 
 -- Recharge manuelle de points (l'admin l'appelle après avoir reçu le paiement
--- Wave) : montant multiple de 50 obligatoire, débloque automatiquement le
--- chauffeur si son solde repasse à 50 ou plus, et logue la transaction.
-create or replace function public.admin_recharger_points(p_tel text, p_token text, p_tricycle uuid, p_montant int)
+-- Wave) — clients ET chauffeurs, système 100% recharge : montant multiple de
+-- 50 obligatoire, débloque automatiquement le compte si son solde repasse à
+-- 50 ou plus (uniquement pertinent pour les chauffeurs : is_offline), et
+-- logue la transaction.
+-- drop obligatoire : la signature change (p_table en 3e position, remplace
+-- l'ancien p_tricycle) — CREATE OR REPLACE seul créerait une 2e fonction
+-- surchargée orpheline plutôt que de remplacer l'ancienne.
+drop function if exists public.admin_recharger_points(text, text, uuid, int);
+create or replace function public.admin_recharger_points(p_tel text, p_token text, p_table text, p_id uuid, p_montant int)
 returns void language plpgsql security definer set search_path = public as $$
 declare v uuid := public._auth_admin(p_tel, p_token); v_solde int;
 begin
   if p_montant is null or p_montant <= 0 or p_montant % 50 <> 0 then raise exception 'MONTANT_INVALIDE'; end if;
-  update public.tricycles set solde_points = solde_points + p_montant where id = p_tricycle returning solde_points into v_solde;
-  if v_solde is null then raise exception 'CHAUFFEUR_INTROUVABLE'; end if;
-  if v_solde >= 50 then update public.tricycles set is_offline = false where id = p_tricycle; end if;
-  insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, p_montant, 'RECHARGE');
+  if p_table = 'tricycles' then
+    update public.tricycles set solde_points = solde_points + p_montant where id = p_id returning solde_points into v_solde;
+    if v_solde is null then raise exception 'CHAUFFEUR_INTROUVABLE'; end if;
+    if v_solde >= 50 then update public.tricycles set is_offline = false where id = p_id; end if;
+    insert into public.points_transactions (tricycle_id, montant, type) values (p_id, p_montant, 'RECHARGE');
+  elsif p_table = 'clients' then
+    update public.clients set solde_points = solde_points + p_montant where id = p_id returning solde_points into v_solde;
+    if v_solde is null then raise exception 'CLIENT_INTROUVABLE'; end if;
+    insert into public.points_transactions (client_id, montant, type) values (p_id, p_montant, 'RECHARGE');
+  else
+    raise exception 'TABLE_INVALIDE';
+  end if;
 end $$;
 
 create or replace function public.admin_change_password(p_tel text, p_token text, p_nouveau text)

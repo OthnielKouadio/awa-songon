@@ -98,6 +98,7 @@ export const remote: Backend = {
   chauffeurSetStatus: (c, status) => rpc("chauffeur_set_status", { ...auth(c), p_status: status }),
   chauffeurSetEtat: (c, etat) => rpc("chauffeur_set_etat", { ...auth(c), p_etat: etat }),
   chauffeurSetPrix: (c, prix) => rpc("chauffeur_set_prix", { ...auth(c), p_prix: prix }),
+  chauffeurSetPosition: (c, lat, long) => rpc("chauffeur_set_position", { ...auth(c), p_lat: lat, p_long: long }),
   async chauffeurPartir(c) {
     const r = await rpc<{ bonus_fidelite: boolean; solde_points: number }>("chauffeur_partir", auth(c));
     return { bonusFidelite: r.bonus_fidelite, soldePoints: r.solde_points };
@@ -126,8 +127,7 @@ export const remote: Backend = {
 
     remove: (c, table, id) => rpc("admin_remove", { ...auth(c), p_table: table, p_id: id }),
     setStatut: (c, table, id, statut: CompteStatut) => rpc("admin_set_statut", { ...auth(c), p_table: table, p_id: id, p_statut: statut }),
-    prolongerAbonnement: (c, clientId) => rpc("admin_prolonger_abonnement", { ...auth(c), p_client: clientId }),
-    rechargerPoints: (c, tricycleId, montant) => rpc("admin_recharger_points", { ...auth(c), p_tricycle: tricycleId, p_montant: montant }),
+    rechargerPoints: (c, table, id, montant) => rpc("admin_recharger_points", { ...auth(c), p_table: table, p_id: id, p_montant: montant }),
     changerMotDePasse: (c, nouveau) => rpc("admin_change_password", { ...auth(c), p_nouveau: nouveau }),
 
     subscribe(onChange, onStatus) {

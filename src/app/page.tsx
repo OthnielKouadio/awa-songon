@@ -11,6 +11,7 @@ import {
   BONUS_FIDELITE_POINTS,
   BONUS_INSCRIPTION,
   CITERNES_FIDELITE,
+  COUT_COMMANDE_CLIENT,
   formatFcfa,
   formatPoints,
   LIVRAISONS_ESSAI,
@@ -235,11 +236,15 @@ function Tarifs() {
       <div className="mt-7 grid gap-4 sm:grid-cols-2">
         <div className="brut-sm border-brut p-5">
           <Badge tone="sky">Client</Badge>
-          <p className="mt-3 font-bold">Prix de la citerne selon la zone, pas de frais d&apos;app.</p>
+          <p className="mt-3 font-bold">
+            {formatFcfa(COUT_COMMANDE_CLIENT)} par commande, recharge min {formatFcfa(RECHARGE_MIN_FCFA)}.
+          </p>
         </div>
         <div className="brut-sm border-brut p-5">
           <Badge tone="sky">Chauffeur</Badge>
-          <p className="mt-3 font-bold">{formatFcfa(POINTS_PAR_LIVRAISON)} de commission par citerne, prélevé en points.</p>
+          <p className="mt-3 font-bold">
+            {formatFcfa(POINTS_PAR_LIVRAISON)} par livraison, {formatPoints(BONUS_INSCRIPTION)} offerts.
+          </p>
         </div>
       </div>
     </section>

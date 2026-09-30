@@ -69,8 +69,9 @@ L'onglet **Sécurité** de `/admin` affiche un bouton pour réinitialiser les do
 - Temps estimé = position dans la file × 35 min.
 - « Livré » sort la commande de la file, fait remonter les suivants d'un cran, et le client voit un écran **« Livré ! »** qu'il ferme lui-même (bouton « Commander à nouveau ») avant de repasser en mode commande.
 - **Appel direct uniquement — aucun bouton WhatsApp** nulle part : `tel:` pour client → chauffeur (via son suivi) et chauffeur → client (dans sa file, avec le nom du client).
-- GPS optionnel : pop-up custom → `getCurrentPosition()`. Accepté à l'inscription (client) et ré-actualisable à chaque commande ; refusé ou indisponible → la commande part avec la position déjà enregistrée, ou sans GPS.
+- GPS optionnel (client) : pop-up custom → `getCurrentPosition()`. Accepté à l'inscription et ré-actualisable à chaque commande ; refusé ou indisponible → la commande part avec la position déjà enregistrée, ou sans GPS.
 - « Naviguer » ouvre `https://www.google.com/maps/dir/?api=1&destination=lat,long` (lien simple, aucune API payante).
+- **Suivi live du tricycle** : dès que le tableau de bord chauffeur est ouvert, `navigator.geolocation.watchPosition()` envoie sa position toutes les ~5s (`chauffeur_set_position`, best-effort — une position ratée ne bloque rien). Pendant une livraison (`EN_COURS`), le client voit 2 marqueurs sur sa carte de suivi (sa position + le tricycle qui bouge), une ligne entre les deux et la distance à vol d'oiseau. Une position vieille de plus de 2 minutes n'est plus affichée (le chauffeur a pu fermer l'appli).
 
 ## Statuts de compte — PAYE / IMPAYE / BLOQUE
 
@@ -122,7 +123,7 @@ Chaque chauffeur a un solde de points (`solde_points`), distinct du statut PAYE/
 
 ## Notes
 
-- Les tricycles n'émettent pas de GPS réel : sur la carte admin, leur position est **estimée** (à la source, ou vers le lot en cours de livraison).
+- Les tricycles émettent maintenant un vrai GPS live (voir « Suivi live du tricycle » plus haut) — mais uniquement côté client, pendant une livraison. La carte **admin**, elle, continue d'**estimer** leur position (à la source, ou vers le lot en cours de livraison) plutôt que d'utiliser `tricycles.lat/long` : à changer si un suivi live admin est un jour voulu.
 - Tuiles : serveur public OpenStreetMap (usage modéré). Pour un fort trafic, prends un fournisseur de tuiles dédié.
 - Polices : Clash Display (Fontshare) avec Sora en repli, Space Grotesk pour le corps.
 - Palette 100 % bleue (`#F7FBFF` / `#0A1931` / `#0096FF` / `#E0F2FF` / `#EDF6FF`) — aucune trace de jaune.

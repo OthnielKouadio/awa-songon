@@ -18,9 +18,14 @@ export const MESSAGES: Record<string, string> = {
   REFUSE: "Action refusée : ton compte n'est pas administrateur.",
   COMPTE_BLOQUE: "Ton compte est bloqué. Contacte l'administrateur.",
   MDP_INVALIDE: "Choisis un mot de passe d'au moins 6 caractères.",
+  // SOLDE_INSUFFISANT_CLIENT doit être testé AVANT SOLDE_INSUFFISANT (sinon
+  // toAppError() matcherait le préfixe commun et donnerait le mauvais message).
+  SOLDE_INSUFFISANT_CLIENT: "Solde insuffisant, veuillez recharger.",
   SOLDE_INSUFFISANT: "Solde de points insuffisant. Recharge pour continuer.",
   MONTANT_INVALIDE: "Le montant doit être un multiple de 50.",
   CHAUFFEUR_INTROUVABLE: "Chauffeur introuvable.",
+  CLIENT_INTROUVABLE: "Client introuvable.",
+  POSITION_INVALIDE: "Position GPS invalide.",
   RESEAU: "Pas de connexion. Réessaie dans un instant.",
 };
 

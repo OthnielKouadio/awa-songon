@@ -3,8 +3,19 @@
 import { motion } from "framer-motion";
 import { Icon } from "@/components/icons";
 import { Badge, Counter, LinkBtn, PulseDot } from "@/components/ui";
-import { callLink, estimerMinutes, formatFcfa, formatMinutes, heure, QUANTITE_L } from "@/lib/format";
+import {
+  callLink,
+  distanceMetres,
+  estimerMinutes,
+  formatDistance,
+  formatFcfa,
+  formatMinutes,
+  heure,
+  POSITION_MAX_AGE_MS,
+  QUANTITE_L,
+} from "@/lib/format";
 import type { Suivi } from "@/lib/types";
+import type { MapLine, MapMarker } from "./MapView";
 import MapLazy from "./MapLazy";
 
 /**
@@ -22,6 +33,30 @@ export default function OrderTracker({ s, start }: { s: Suivi; start: number }) 
   if (livre) progress = 100;
   else if (enCours) progress = 90;
   else if (start > 1) progress = 8 + ((start - s.position_file) / (start - 1)) * 72;
+
+  // Position live du tricycle : seulement si fraîche (le chauffeur peut avoir
+  // fermé l'appli) et seulement pendant la livraison (avant ça, il n'est pas
+  // encore en route vers ce client précisément).
+  const positionFraiche =
+    enCours &&
+    s.tricycle_lat != null &&
+    s.tricycle_long != null &&
+    s.tricycle_position_maj != null &&
+    Date.now() - new Date(s.tricycle_position_maj).getTime() < POSITION_MAX_AGE_MS;
+
+  const markers: MapMarker[] = [];
+  const lines: MapLine[] = [];
+  let distance: number | null = null;
+  if (s.lat != null && s.long != null) {
+    markers.push({ id: "moi", lat: s.lat, lng: s.long, kind: "client", title: `Lot ${s.lot_numero}` });
+  }
+  if (positionFraiche) {
+    markers.push({ id: "tricycle", lat: s.tricycle_lat!, lng: s.tricycle_long!, kind: "tricycle", title: s.chauffeur_nom });
+    if (s.lat != null && s.long != null) {
+      lines.push({ id: "trajet", from: [s.tricycle_lat!, s.tricycle_long!], to: [s.lat, s.long] });
+      distance = distanceMetres(s.tricycle_lat!, s.tricycle_long!, s.lat, s.long);
+    }
+  }
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-7">
@@ -104,10 +139,23 @@ export default function OrderTracker({ s, start }: { s: Suivi; start: number }) 
         <Row k="Commandé à" v={heure(s.created_at)} />
       </div>
 
-      {s.lat != null && s.long != null && (
+      {markers.length > 0 && (
         <div>
-          <p className="label">Ta position enregistrée</p>
-          <MapLazy height={220} interactive={false} markers={[{ id: "moi", lat: s.lat, lng: s.long, kind: "client", title: `Lot ${s.lot_numero}` }]} />
+          <div className="mb-1.5 flex items-center justify-between">
+            <p className="label !mb-0">{positionFraiche ? "Le tricycle arrive" : "Ta position enregistrée"}</p>
+            {distance != null && (
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-azur">
+                <PulseDot /> à {formatDistance(distance)}
+              </span>
+            )}
+          </div>
+          <MapLazy
+            height={220}
+            interactive={false}
+            markers={markers}
+            lines={lines}
+            fitKey={positionFraiche ? `live:${s.tricycle_lat!.toFixed(3)},${s.tricycle_long!.toFixed(3)}` : "statique"}
+          />
         </div>
       )}
 

@@ -11,7 +11,7 @@ import TricycleCard from "@/components/TricycleCard";
 import { Badge, Btn, ErrorBox, Logo, Spinner, StatutBadge, Toggle } from "@/components/ui";
 import { api } from "@/lib/api";
 import { AppError, errorMessage } from "@/lib/errors";
-import { daysLeft } from "@/lib/format";
+import { formatPoints, SOLDE_MIN_CLIENT } from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
 import type { ClientProfile, Creds, Suivi, TricycleDispo } from "@/lib/types";
 import { useGeo } from "@/lib/useGeo";
@@ -66,8 +66,8 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const load = useCallback(async () => {
     try {
       const p = await api.clientProfil(creds);
-      // Abonnement expiré : on sort avant même de charger la file ou l'historique.
-      if (daysLeft(p.subscription_ends_at) <= 0) {
+      // Solde de points insuffisant : on sort avant même de charger la file ou l'historique.
+      if (p.solde_points < SOLDE_MIN_CLIENT) {
         router.replace("/bloque");
         return;
       }
@@ -107,7 +107,11 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
     void load();
   }, [load]);
 
-  useLiveRefresh([profile ? `client:${profile.id}` : null, profile ? `cite:${profile.cite_id}` : null], load, 10000);
+  useLiveRefresh(
+    [profile ? `client:${profile.id}` : null, profile ? `cite:${profile.cite_id}` : null, active ? `tricycle:${active.tricycle_id}` : null],
+    load,
+    10000
+  );
 
   if (!profile) return error ? <Wrap onLogout={onLogout}><ErrorBox>{error}</ErrorBox></Wrap> : <Wrap onLogout={onLogout}><Spinner /></Wrap>;
 
@@ -210,20 +214,10 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   );
 }
 
-/** "Il te reste X jours" — vert au-delà de 3 jours, orange à partir de 3 jours
- *  ou moins (le compte n'est bloqué et redirigé vers /bloque qu'à 0 jour). */
-function SubscriptionBadge({ subscriptionEndsAt }: { subscriptionEndsAt: string }) {
-  const days = daysLeft(subscriptionEndsAt);
-  const low = days <= 3;
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full border-[1.5px] px-3 py-1 text-xs font-bold uppercase tracking-wide ${
-        low ? "border-orange-500 bg-orange-50 text-orange-600" : "border-green-600 bg-green-50 text-green-700"
-      }`}
-    >
-      Il te reste {days} jour{days > 1 ? "s" : ""}
-    </span>
-  );
+/** Solde de points du client — rouge sous le seuil de blocage (le compte n'est
+ *  bloqué et redirigé vers /bloque qu'en dessous de SOLDE_MIN_CLIENT). */
+function PointsBadge({ soldePoints }: { soldePoints: number }) {
+  return <Badge tone={soldePoints < SOLDE_MIN_CLIENT * 3 ? "danger" : "sky"}>{formatPoints(soldePoints)}</Badge>;
 }
 
 function Wrap({
@@ -250,7 +244,7 @@ function Wrap({
             {profile.cite_nom} · Lot {profile.lot_numero}
           </Badge>
           <StatutBadge statut={profile.statut} />
-          <SubscriptionBadge subscriptionEndsAt={profile.subscription_ends_at} />
+          <PointsBadge soldePoints={profile.solde_points} />
         </div>
       )}
 

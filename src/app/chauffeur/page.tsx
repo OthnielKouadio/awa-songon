@@ -26,6 +26,7 @@ import {
 import { clearSession, readSession } from "@/lib/session";
 import { playNotification, unlockAudio } from "@/lib/sound";
 import type { ChauffeurCommande, ChauffeurProfile, Creds } from "@/lib/types";
+import { useGeoWatch } from "@/lib/useGeoWatch";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 
 const SOUND_KEY = "awa:sound";
@@ -81,6 +82,12 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const knownIds = useRef<Set<string> | null>(null);
   const soundRef = useRef(true);
   const prixDirtyRef = useRef(false);
+  // Les points sont désormais déduits à la CRÉATION de la commande (côté
+  // client), pas quand ce chauffeur clique "Je pars livrer" : le bonus
+  // fidélité peut donc arriver entre deux chargements, sans action de sa part.
+  // On le détecte en comparant total_points_utilises d'un chargement à l'autre
+  // (il ne repasse à 0 QUE via ce bonus, jamais via une recharge admin).
+  const prevTotalUtilise = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -97,6 +104,12 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
       setPrixInput((cur) => (prixDirtyRef.current ? cur : String(p.prix_1000)));
       setFile(f);
       setError("");
+
+      if (prevTotalUtilise.current !== null && prevTotalUtilise.current > 0 && p.total_points_utilises === 0) {
+        setBonusToast(true);
+        setTimeout(() => setBonusToast(false), 3500);
+      }
+      prevTotalUtilise.current = p.total_points_utilises;
 
       if (knownIds.current) {
         const fresh = f.some((c) => !knownIds.current!.has(c.id));
@@ -115,29 +128,24 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   useLiveRefresh([profile ? `tricycle:${profile.id}` : null], load, 8000);
 
+  // Suivi GPS live : dès que le tableau de bord est ouvert, on envoie la
+  // position toutes les ~5s pour que le client suive le tricycle sur sa carte.
+  // Best-effort : une position ratée ne doit jamais bloquer/afficher d'erreur.
+  useGeoWatch(
+    useCallback(
+      (lat, lng) => {
+        void api.chauffeurSetPosition(creds, lat, lng).catch(() => {});
+      },
+      [creds]
+    )
+  );
+
   async function act(fn: () => Promise<void>) {
     setBusy(true);
     setError("");
     try {
       await fn();
       await load();
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function partir() {
-    setBusy(true);
-    setError("");
-    try {
-      const r = await api.chauffeurPartir(creds);
-      await load();
-      if (r.bonusFidelite) {
-        setBonusToast(true);
-        setTimeout(() => setBonusToast(false), 3500);
-      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -300,7 +308,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           <Btn variant={aLaSource ? "white" : "azur"} size="lg" disabled={busy || aLaSource} onClick={() => act(() => api.chauffeurSetEtat(creds, "A_LA_SOURCE"))}>
             <Icon name="drop" size={20} /> Je suis à la source
           </Btn>
-          <Btn variant="ink" size="lg" disabled={busy || !premier || !!enCours} onClick={() => void partir()}>
+          <Btn variant="ink" size="lg" disabled={busy || !premier || !!enCours} onClick={() => act(() => api.chauffeurPartir(creds).then(() => {}))}>
             <Icon name="truck" size={20} /> Je pars livrer N°{premier?.position_file ?? 1}
           </Btn>
         </div>

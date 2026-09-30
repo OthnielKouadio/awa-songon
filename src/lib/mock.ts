@@ -61,7 +61,6 @@ function uid(): string {
 }
 const token = () => uid().replace(/-/g, "") + uid().replace(/-/g, "");
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60000).toISOString();
-const daysFromNow = (d: number) => new Date(Date.now() + d * 86400000).toISOString();
 const prixValide = (p: unknown): p is number => typeof p === "number" && Number.isFinite(p) && p >= PRIX_MIN && p <= PRIX_MAX;
 
 function seed(): DB {
@@ -105,6 +104,9 @@ function seed(): DB {
     solde_points,
     total_points_utilises: 0,
     is_offline,
+    lat: null,
+    long: null,
+    position_maj: null,
     pin: "1234",
     token: null,
     essais: 0,
@@ -119,7 +121,7 @@ function seed(): DB {
     lat: number | null,
     long: number | null,
     statut: CompteStatut = "PAYE",
-    subscriptionDays = 30
+    solde_points = 1200
   ): MockClient => ({
     id,
     nom,
@@ -130,7 +132,7 @@ function seed(): DB {
     long,
     statut,
     date_paiement: statut === "PAYE" ? minutesAgo(60 * 24 * 3) : null,
-    subscription_ends_at: daysFromNow(subscriptionDays),
+    solde_points,
     pin: "1234",
     token: null,
     essais: 0,
@@ -182,9 +184,10 @@ function seed(): DB {
       tri(koffiId, "Koffi", "0700000004", s4, "OFF", "A_LA_SOURCE", 2000, [c3], "PAYE", 20, true),
     ],
     clients: [
-      cli(fatouId, "Fatou", "0701020304", c1, "12", 5.3868, -4.2705, "PAYE", 25),
-      cli(issaId, "Issa", "0705060708", c1, "7", null, null, "IMPAYE", 2), // badge orange (≤3 j) pour la démo
-      cli(ayaId, "Aya", "0709101112", c1, "21", 5.3852, -4.2671, "PAYE", 15),
+      cli(fatouId, "Fatou", "0701020304", c1, "12", 5.3868, -4.2705, "PAYE", 1200),
+      // Issa : solde sous 100 (démo de la page bloquante "Solde insuffisant").
+      cli(issaId, "Issa", "0705060708", c1, "7", null, null, "IMPAYE", 50),
+      cli(ayaId, "Aya", "0709101112", c1, "21", 5.3852, -4.2671, "PAYE", 1200),
     ],
     commandes: [
       cmd(fatouId, kaderId, c1, "12", 2500, 1, "EN_ATTENTE", 5.3868, -4.2705, 25),
@@ -250,7 +253,7 @@ function clientProfile(db: DB, cl: MockClient): ClientProfile {
     cite_nom: c.nom,
     lot_numero: cl.lot_numero,
     statut: cl.statut,
-    subscription_ends_at: cl.subscription_ends_at,
+    solde_points: cl.solde_points,
   };
 }
 
@@ -273,6 +276,9 @@ function suivi(db: DB, c: Commande): Suivi {
     etat: t.etat,
     cite_nom: ci.nom,
     source_nom: s?.nom ?? null,
+    tricycle_lat: t.lat,
+    tricycle_long: t.long,
+    tricycle_position_maj: t.position_maj,
   };
 }
 
@@ -345,12 +351,18 @@ export const mock: Backend = {
       .sort((a, b) => a.file_count - b.file_count || a.nom.localeCompare(b.nom));
   },
 
+  // Points (1 FCFA = 1 point) — système 100% recharge, double déduction
+  // atomique à la CRÉATION de la commande (dès qu'elle est assignée au
+  // chauffeur, pas à l'acceptation de la livraison) : le client paie 100
+  // points, le chauffeur en perd 50 (avec fidélité + passage hors ligne).
   async creerCommande(c: NouvelleCommande, creds: Creds) {
     return tx((db) => {
       const cl = authClient(db, creds);
       if (cl.statut === "BLOQUE") return fail("COMPTE_BLOQUE");
+      if (cl.solde_points < 100) return fail("SOLDE_INSUFFISANT_CLIENT");
       const t = db.tricycles.find((x) => x.id === c.tricycleId);
       if (!t || t.status !== "DISPO" || t.statut === "BLOQUE") return fail("TRICYCLE_INDISPONIBLE");
+      if (t.solde_points < 50) return fail("SOLDE_INSUFFISANT");
       if (db.commandes.some((x) => x.client_id === cl.id && ACTIVE.includes(x.status))) return fail("TROP_DE_COMMANDES");
 
       const gpsIn = c.gps && Math.abs(c.gps.lat) <= 90 && Math.abs(c.gps.long) <= 180 ? c.gps : null;
@@ -371,6 +383,17 @@ export const mock: Backend = {
         created_at: new Date().toISOString(),
       };
       db.commandes.push(commande);
+
+      cl.solde_points -= 100;
+
+      t.solde_points -= 50;
+      t.total_points_utilises += 50;
+      if (t.total_points_utilises >= 5000) {
+        t.solde_points += 50;
+        t.total_points_utilises = 0;
+      }
+      t.is_offline = t.solde_points < 50;
+
       return commande.id;
     });
   },
@@ -447,7 +470,8 @@ export const mock: Backend = {
         long: gps?.long ?? null,
         statut: "IMPAYE",
         date_paiement: null,
-        subscription_ends_at: daysFromNow(30),
+        // Bonus d'essai à l'inscription : 1200 points = ~12 commandes gratuites.
+        solde_points: 1200,
         pin: i.pin,
         token: token(),
         essais: 0,
@@ -486,6 +510,9 @@ export const mock: Backend = {
         solde_points: 2500,
         total_points_utilises: 0,
         is_offline: false,
+        lat: null,
+        long: null,
+        position_maj: null,
         pin: i.pin,
         token: token(),
         essais: 0,
@@ -560,13 +587,26 @@ export const mock: Backend = {
     });
   },
 
+  // Position GPS live (watchPosition, ~ toutes les 5s) : permet au client de
+  // voir le tricycle bouger sur la carte pendant la livraison.
+  async chauffeurSetPosition(c, lat, long) {
+    tx((db) => {
+      if (!Number.isFinite(lat) || !Number.isFinite(long) || Math.abs(lat) > 90 || Math.abs(long) > 180) return fail("POSITION_INVALIDE");
+      const t = authTricycle(db, c);
+      t.lat = lat;
+      t.long = long;
+      t.position_maj = new Date().toISOString();
+    });
+  },
+
+  // Les points (1 FCFA = 1 point, -50 par commande) sont désormais déduits dès
+  // la CRÉATION de la commande (creerCommande), pas ici : au moment où le
+  // chauffeur clique « Je pars livrer », la commande est déjà assignée et déjà
+  // payée en points. Renvoie quand même {bonusFidelite, soldePoints} (solde
+  // inchangé, bonus toujours false) pour ne pas casser le contrat frontend.
   async chauffeurPartir(c) {
-    // Points (1 FCFA = 1 point) : accepter une livraison = 1 citerne = -50 points.
-    // Sous 50 restants, is_offline passe à true. Fidélité : à 5000 points cumulés
-    // utilisés, +50 points offerts et le compteur repart de zéro.
     return tx((db) => {
       const t = authTricycle(db, c);
-      if (t.solde_points < 50) return fail("SOLDE_INSUFFISANT");
       const file = actives(db, t.id);
       if (file.some((x) => x.status === "EN_COURS")) return fail("DEJA_EN_COURS");
       const next = file.filter((x) => x.status === "EN_ATTENTE").sort((a, b) => a.position_file - b.position_file)[0];
@@ -574,18 +614,8 @@ export const mock: Backend = {
 
       next.status = "EN_COURS";
       t.etat = "EN_ROUTE";
-      t.solde_points -= 50;
-      t.total_points_utilises += 50;
 
-      let bonusFidelite = false;
-      if (t.total_points_utilises >= 5000) {
-        t.solde_points += 50;
-        t.total_points_utilises = 0;
-        bonusFidelite = true;
-      }
-      t.is_offline = t.solde_points < 50;
-
-      return { bonusFidelite, soldePoints: t.solde_points };
+      return { bonusFidelite: false, soldePoints: t.solde_points };
     });
   },
 
@@ -612,7 +642,7 @@ export const mock: Backend = {
       return {
         cites: db.cites,
         sources: db.sources,
-        tricycles: db.tricycles.map(({ id, nom, telephone, source_id, status, etat, prix_1000, statut, cite_ids, solde_points, total_points_utilises, is_offline }) => ({
+        tricycles: db.tricycles.map(({ id, nom, telephone, source_id, status, etat, prix_1000, statut, cite_ids, solde_points, total_points_utilises, is_offline, lat, long, position_maj }) => ({
           id,
           nom,
           telephone,
@@ -625,8 +655,11 @@ export const mock: Backend = {
           solde_points,
           total_points_utilises,
           is_offline,
+          lat,
+          long,
+          position_maj,
         })),
-        clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, subscription_ends_at }) => ({
+        clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, solde_points }) => ({
           id,
           nom,
           telephone,
@@ -636,7 +669,7 @@ export const mock: Backend = {
           long,
           statut,
           date_paiement,
-          subscription_ends_at,
+          solde_points,
         })),
         commandes: [...db.commandes].sort((a, b) => b.created_at.localeCompare(a.created_at)),
       };
@@ -713,24 +746,20 @@ export const mock: Backend = {
       });
     },
 
-    async prolongerAbonnement(c, clientId) {
-      tx((db) => {
-        authAdmin(db, c);
-        const cl = db.clients.find((x) => x.id === clientId);
-        if (!cl) return fail("COMMANDE_INTROUVABLE");
-        const base = Math.max(new Date(cl.subscription_ends_at).getTime(), Date.now());
-        cl.subscription_ends_at = new Date(base + 30 * 86400000).toISOString();
-      });
-    },
-
-    async rechargerPoints(c, tricycleId, montant) {
+    async rechargerPoints(c, table, id, montant) {
       tx((db) => {
         authAdmin(db, c);
         if (!Number.isFinite(montant) || montant <= 0 || montant % 50 !== 0) return fail("MONTANT_INVALIDE");
-        const t = db.tricycles.find((x) => x.id === tricycleId);
-        if (!t) return fail("CHAUFFEUR_INTROUVABLE");
-        t.solde_points += montant;
-        if (t.solde_points >= 50) t.is_offline = false;
+        if (table === "tricycles") {
+          const t = db.tricycles.find((x) => x.id === id);
+          if (!t) return fail("CHAUFFEUR_INTROUVABLE");
+          t.solde_points += montant;
+          if (t.solde_points >= 50) t.is_offline = false;
+        } else {
+          const cl = db.clients.find((x) => x.id === id);
+          if (!cl) return fail("CLIENT_INTROUVABLE");
+          cl.solde_points += montant;
+        }
       });
     },
 
