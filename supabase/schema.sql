@@ -16,6 +16,13 @@
 --  l'admin. auth_login('auto', …) reconnaît seul un client ou un chauffeur
 --  (page /login sans choix de rôle).
 --
+--  v9 (essai & comptes) : essai gratuit PAR COMPTE (settings.essai_mois, 2 mois
+--  par défaut, depuis l'inscription) — points illimités pendant l'essai, rien
+--  n'est débité ; ensuite recharge obligatoire (solde de départ 0). Code PIN
+--  oublié : l'admin donne un code provisoire, changé à la connexion suivante.
+--  Anti-intrusion : un chauffeur inscrit reste invisible tant que l'admin ne
+--  l'a pas validé (tricycles.valide).
+--
 --  v6 : saisie directe par le chauffeur (commandes.source, clients temporaires,
 --  journal_actions), livraison aujourd'hui/demain (scheduled_for, cron 00h00,
 --  annulation fermée à 18h la veille), période d'essai (settings.trial_ends_at)
@@ -326,6 +333,27 @@ insert into public.settings (id) values (true) on conflict (id) do nothing;
 -- Numéro de dépôt Wave (forme canonique 0XXXXXXXXX), modifiable dans
 -- Admin → Paramètres (admin_set_depot_phone). Seule source pour l'affichage.
 alter table public.settings add column if not exists depot_phone text not null default '0789855418';
+-- Durée de l'essai gratuit offert à chaque nouveau compte (client ET chauffeur).
+alter table public.settings add column if not exists essai_mois int not null default 2 check (essai_mois between 0 and 24);
+
+-- v9 : fin d'essai PAR COMPTE. Comptes existants : 2 mois après leur inscription.
+alter table public.clients   add column if not exists essai_fin timestamptz;
+alter table public.tricycles add column if not exists essai_fin timestamptz;
+update public.clients   set essai_fin = created_at + interval '2 months' where essai_fin is null;
+update public.tricycles set essai_fin = created_at + interval '2 months' where essai_fin is null;
+-- Code provisoire donné par l'admin (code oublié) : à changer à la connexion suivante.
+alter table public.clients   add column if not exists pin_provisoire boolean not null default false;
+alter table public.tricycles add column if not exists pin_provisoire boolean not null default false;
+-- Anti-intrusion : un nouveau chauffeur est invisible tant que l'admin ne l'a pas
+-- validé. Les chauffeurs déjà inscrits sont considérés validés.
+alter table public.tricycles add column if not exists valide boolean;
+update public.tricycles set valide = true where valide is null;
+alter table public.tricycles alter column valide set default false;
+alter table public.tricycles alter column valide set not null;
+-- Points réellement débités pour cette commande (rien pendant l'essai) : seuls
+-- ceux-là sont rendus à l'annulation. Commandes existantes : débitées.
+alter table public.commandes add column if not exists client_debite    boolean not null default true;
+alter table public.commandes add column if not exists chauffeur_debite boolean not null default true;
 
 create index if not exists commandes_tricycle_status_idx on public.commandes (tricycle_id, status);
 create index if not exists commandes_client_status_idx   on public.commandes (client_id, status);
@@ -573,12 +601,26 @@ returns text language sql volatile as $$
   select replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '')
 $$;
 
+-- Essai gratuit en cours pour ce compte ?
+create or replace function public._en_essai(p_fin timestamptz)
+returns boolean language sql stable as $$
+  select p_fin is not null and now() < p_fin
+$$;
+
+-- Fin d'essai d'un compte qui s'inscrit maintenant.
+create or replace function public._fin_essai_nouveau()
+returns timestamptz language sql stable security definer set search_path = public as $$
+  select now() + make_interval(months => coalesce((select essai_mois from public.settings where id), 2))
+$$;
+
 create or replace function public._chauffeur_profil(p_id uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
     'id', t.id, 'nom', t.nom, 'telephone', t.telephone, 'status', t.status, 'etat', t.etat,
     'prix_1000', t.prix_1000, 'statut', t.statut, 'source_nom', s.nom,
-    'solde_points', t.solde_points, 'total_points_utilises', t.total_points_utilises, 'is_offline', t.is_offline,
+    'solde_points', t.solde_points, 'total_points_utilises', t.total_points_utilises,
+    'is_offline', (not public._en_essai(t.essai_fin) and (t.is_offline or t.solde_points < 50)),
+    'essai_fin', t.essai_fin, 'valide', t.valide, 'pin_provisoire', t.pin_provisoire,
     'cite_id', ci.id, 'cite_nom', ci.nom)
   from public.tricycles t
   join public.cites ci on ci.id = t.cite_id
@@ -591,7 +633,7 @@ returns jsonb language sql stable security definer set search_path = public as $
   select jsonb_build_object(
     'id', cl.id, 'nom', cl.nom, 'telephone', cl.telephone,
     'cite_id', ci.id, 'cite_nom', ci.nom, 'lot_numero', cl.lot_numero, 'statut', cl.statut,
-    'solde_points', cl.solde_points)
+    'solde_points', cl.solde_points, 'essai_fin', cl.essai_fin, 'pin_provisoire', cl.pin_provisoire)
   from public.clients cl
   join public.cites ci on ci.id = cl.cite_id
   where cl.id = p_id
@@ -779,14 +821,15 @@ begin
     update public.clients
        set nom = v_nom, cite_id = p_cite, lot_numero = v_lot, lat = p_lat, long = p_long,
            pin_hash = public._hash_pin(p_pin), session_hash = public._hash_token(v_token),
-           solde_points = 1200, is_temporary = false
+           solde_points = 0, essai_fin = public._fin_essai_nouveau(), pin_provisoire = false, is_temporary = false
      where id = v_id;
     return jsonb_build_object('token', v_token, 'profile', public._client_profil(v_id));
   end if;
   v_id := gen_random_uuid();
 
-  insert into public.clients (id, nom, telephone, cite_id, lot_numero, lat, long, statut, pin_hash, session_hash)
-  values (v_id, v_nom, v_tel, p_cite, v_lot, p_lat, p_long, 'IMPAYE', public._hash_pin(p_pin), public._hash_token(v_token));
+  insert into public.clients (id, nom, telephone, cite_id, lot_numero, lat, long, statut, pin_hash, session_hash, solde_points, essai_fin)
+  values (v_id, v_nom, v_tel, p_cite, v_lot, p_lat, p_long, 'IMPAYE', public._hash_pin(p_pin), public._hash_token(v_token),
+          0, public._fin_essai_nouveau());
 
   return jsonb_build_object('token', v_token, 'profile', public._client_profil(v_id));
 end $$;
@@ -817,8 +860,10 @@ begin
   if exists (select 1 from public.admins where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
   if exists (select 1 from public.tricycles where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
 
-  insert into public.tricycles (id, nom, telephone, cite_id, source_id, prix_1000, statut, pin_hash, session_hash)
-  values (v_id, v_nom, v_tel, p_cite, p_source, p_prix, 'IMPAYE', public._hash_pin(p_pin), public._hash_token(v_token));
+  insert into public.tricycles (id, nom, telephone, cite_id, source_id, prix_1000, statut, pin_hash, session_hash,
+                                solde_points, essai_fin, valide)
+  values (v_id, v_nom, v_tel, p_cite, p_source, p_prix, 'IMPAYE', public._hash_pin(p_pin), public._hash_token(v_token),
+          0, public._fin_essai_nouveau(), false);
 
   return jsonb_build_object('token', v_token, 'profile', public._chauffeur_profil(v_id));
 end $$;
@@ -844,7 +889,8 @@ language sql stable security definer set search_path = public as $$
          t.prix_1000, t.status
   from public.tricycles t
   left join public.sources s on s.id = t.source_id
-  where t.cite_id = p_cite and t.statut <> 'BLOQUE' and not t.is_offline
+  where t.cite_id = p_cite and t.statut <> 'BLOQUE' and t.valide
+    and (public._en_essai(t.essai_fin) or (not t.is_offline and t.solde_points >= 50))
   order by case t.status when 'ACTIVE' then 0 when 'PAUSED' then 1 else 2 end, 6, t.nom
 $$;
 
@@ -881,12 +927,16 @@ $$;
 
 -- -50 points au chauffeur pour une commande reçue, bonus fidélité dès 5000
 -- utilisés, passage is_offline sous 50. Le tricycle doit déjà être verrouillé.
+-- Pendant son essai gratuit : rien n'est débité. Renvoie true si débité.
+-- drop obligatoire : le type de retour change (void → boolean).
+drop function if exists public._debiter_chauffeur(uuid);
 create or replace function public._debiter_chauffeur(p_tricycle uuid)
-returns void language plpgsql security definer set search_path = public as $$
+returns boolean language plpgsql security definer set search_path = public as $$
 declare
   v_solde int;
   v_utilise int;
 begin
+  if (select public._en_essai(essai_fin) from public.tricycles where id = p_tricycle) then return false; end if;
   select solde_points - 50, total_points_utilises + 50 into v_solde, v_utilise from public.tricycles where id = p_tricycle;
   insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, -50, 'DEDUCTION');
   if v_utilise >= 5000 then
@@ -896,6 +946,7 @@ begin
   end if;
   update public.tricycles set solde_points = v_solde, total_points_utilises = v_utilise, is_offline = (v_solde < 50)
    where id = p_tricycle;
+  return true;
 end $$;
 
 -- Une commande = un voyage = 1000 L, au prix du chauffeur (figé). Le client doit
@@ -935,9 +986,11 @@ declare
   v_id  uuid;
   v_lat double precision;
   v_long double precision;
+  v_client_essai boolean;
 begin
   select * into v_client from public.clients where id = v_client_id for update;
   if v_client.statut = 'BLOQUE' then raise exception 'COMPTE_BLOQUE'; end if;
+  v_client_essai := public._en_essai(v_client.essai_fin);
 
   select c.id into v_active from public.commandes c
    where c.client_id = v_client_id and c.status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
@@ -946,10 +999,11 @@ begin
     raise exception using errcode = 'PT403', message = 'TROP_DE_COMMANDES:' || upper(left(v_active::text, 6));
   end if;
 
-  if v_client.solde_points < 100 then raise exception 'SOLDE_INSUFFISANT_CLIENT'; end if;
+  if not v_client_essai and v_client.solde_points < 100 then raise exception 'SOLDE_INSUFFISANT_CLIENT'; end if;
 
   select * into v_t from public.tricycles where id = p_tricycle for update;
-  if not found or v_t.statut = 'BLOQUE' or v_t.is_offline or v_t.solde_points < 50 then
+  if not found or v_t.statut = 'BLOQUE' or not v_t.valide
+     or (not public._en_essai(v_t.essai_fin) and (v_t.is_offline or v_t.solde_points < 50)) then
     raise exception 'TRICYCLE_INDISPONIBLE';
   end if;
 
@@ -993,9 +1047,14 @@ begin
           case when v_sched > public._today_abj() then ((v_sched - 1) + time '18:00') at time zone 'Africa/Abidjan' end)
   returning id into v_id;
 
-  update public.clients set solde_points = solde_points - 100 where id = v_client_id;
-  insert into public.points_transactions (client_id, montant, type) values (v_client_id, -100, 'DEDUCTION');
-  perform public._debiter_chauffeur(p_tricycle);
+  -- Points : rien pendant l'essai gratuit (de chacun) ; ce qui est débité est noté
+  -- sur la commande pour ne rendre que ça en cas d'annulation.
+  if not v_client_essai then
+    update public.clients set solde_points = solde_points - 100 where id = v_client_id;
+    insert into public.points_transactions (client_id, montant, type, commande_id) values (v_client_id, -100, 'DEDUCTION', v_id);
+  end if;
+  update public.commandes set client_debite = not v_client_essai, chauffeur_debite = public._debiter_chauffeur(p_tricycle)
+   where id = v_id;
 
   return v_id;
 end $$;
@@ -1028,7 +1087,8 @@ begin
 
   select * into v_t from public.tricycles where id = v for update;
   if v_t.statut = 'BLOQUE' then raise exception 'COMPTE_BLOQUE'; end if;
-  if v_t.is_offline or v_t.solde_points < 50 then raise exception 'SOLDE_INSUFFISANT'; end if;
+  if not v_t.valide then raise exception 'COMPTE_EN_ATTENTE'; end if;
+  if not public._en_essai(v_t.essai_fin) and (v_t.is_offline or v_t.solde_points < 50) then raise exception 'SOLDE_INSUFFISANT'; end if;
 
   select * into v_cl from public.clients
    where telephone = v_ctel
@@ -1060,7 +1120,7 @@ begin
           'manual', v, v_temp, p_quantite, v_note)
   returning id into v_id;
 
-  perform public._debiter_chauffeur(v);
+  update public.commandes set client_debite = false, chauffeur_debite = public._debiter_chauffeur(v) where id = v_id;
 
   insert into public.journal_actions (action, acteur_type, acteur_id, details)
   values ('COMMANDE_MANUELLE', 'chauffeur', v,
@@ -1100,13 +1160,16 @@ begin
    where tricycle_id = v_cmd.tricycle_id and position_file > v_cmd.position_file
      and status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING');
 
-  if v_cmd.source = 'app' then
+  -- Seuls les points réellement débités sont rendus (rien pendant l'essai gratuit).
+  if v_cmd.source = 'app' and v_cmd.client_debite then
     update public.clients set solde_points = solde_points + 100 where id = v_client;
     insert into public.points_transactions (client_id, montant, type, commande_id) values (v_client, 100, 'REMBOURSEMENT', p_commande);
   end if;
-  update public.tricycles set solde_points = solde_points + 50 where id = v_cmd.tricycle_id returning solde_points into v_solde;
-  if v_solde >= 50 then update public.tricycles set is_offline = false where id = v_cmd.tricycle_id; end if;
-  insert into public.points_transactions (tricycle_id, montant, type, commande_id) values (v_cmd.tricycle_id, 50, 'REMBOURSEMENT', p_commande);
+  if v_cmd.chauffeur_debite then
+    update public.tricycles set solde_points = solde_points + 50 where id = v_cmd.tricycle_id returning solde_points into v_solde;
+    if v_solde >= 50 then update public.tricycles set is_offline = false where id = v_cmd.tricycle_id; end if;
+    insert into public.points_transactions (tricycle_id, montant, type, commande_id) values (v_cmd.tricycle_id, 50, 'REMBOURSEMENT', p_commande);
+  end if;
 end $$;
 
 -- Vue interne du suivi d'une commande (jamais exposée : droits retirés plus bas,
@@ -1192,7 +1255,10 @@ begin
   if p_status not in ('ACTIVE', 'PAUSED', 'OFFLINE') then raise exception 'STATUT_INVALIDE'; end if;
   select * into t from public.tricycles where id = v for update;
   if p_status <> 'OFFLINE' and t.statut = 'BLOQUE' then raise exception 'COMPTE_BLOQUE'; end if;
-  if p_status <> 'OFFLINE' and t.is_offline then raise exception 'SOLDE_INSUFFISANT'; end if;
+  if p_status <> 'OFFLINE' and not t.valide then raise exception 'COMPTE_EN_ATTENTE'; end if;
+  if p_status <> 'OFFLINE' and not public._en_essai(t.essai_fin) and (t.is_offline or t.solde_points < 50) then
+    raise exception 'SOLDE_INSUFFISANT';
+  end if;
 
   update public.tricycles set status = p_status where id = v;
 
@@ -1493,6 +1559,63 @@ begin
   update public.admins set password_hash = public._hash_pin(p_nouveau) where id = v;
 end $$;
 
+-- ─── RPC : code PIN oublié ──────────────────────────────────────────────────
+-- Pas de SMS : le client/chauffeur appelle l'admin, qui vérifie son identité au
+-- téléphone puis génère ici un code provisoire à 4 chiffres (affiché une seule
+-- fois). Les sessions en cours sont coupées ; à la connexion suivante, l'appli
+-- impose de choisir un nouveau code (pin_provisoire).
+create or replace function public.admin_reinitialiser_pin(p_tel text, p_token text, p_table text, p_id uuid)
+returns text language plpgsql security definer set search_path = public as $$
+declare
+  v uuid := public._auth_admin(p_tel, p_token);
+  v_pin text := lpad(((('x' || encode(extensions.gen_random_bytes(2), 'hex'))::bit(16)::int) % 10000)::text, 4, '0');
+begin
+  if p_table = 'clients' then
+    update public.clients set pin_hash = public._hash_pin(v_pin), pin_provisoire = true, session_hash = null,
+           pin_essais = 0, pin_bloque_jusqua = null
+     where id = p_id and not is_temporary;
+  elsif p_table = 'tricycles' then
+    update public.tricycles set pin_hash = public._hash_pin(v_pin), pin_provisoire = true, session_hash = null,
+           pin_essais = 0, pin_bloque_jusqua = null
+     where id = p_id;
+  else
+    raise exception 'TABLE_INVALIDE';
+  end if;
+  if not found then raise exception 'COMPTE_INTROUVABLE'; end if;
+  insert into public.journal_actions (action, acteur_type, acteur_id, details)
+  values ('PIN_REINITIALISE', 'admin', v, jsonb_build_object('table', p_table, 'compte_id', p_id));
+  return v_pin;
+end $$;
+
+create or replace function public.client_changer_pin(p_tel text, p_token text, p_nouveau text)
+returns void language plpgsql security definer set search_path = public as $$
+declare v uuid := public._auth_client(p_tel, p_token);
+begin
+  if p_nouveau is null or p_nouveau !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
+  update public.clients set pin_hash = public._hash_pin(p_nouveau), pin_provisoire = false where id = v;
+end $$;
+
+create or replace function public.chauffeur_changer_pin(p_tel text, p_token text, p_nouveau text)
+returns void language plpgsql security definer set search_path = public as $$
+declare v uuid := public._auth_tricycle(p_tel, p_token);
+begin
+  if p_nouveau is null or p_nouveau !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
+  update public.tricycles set pin_hash = public._hash_pin(p_nouveau), pin_provisoire = false where id = v;
+end $$;
+
+-- ─── RPC : validation des chauffeurs (anti-intrusion) ───────────────────────
+-- Un chauffeur inscrit par le lien de recrutement n'apparaît aux clients
+-- qu'après validation par l'admin (vérification d'identité, de son tricycle…).
+create or replace function public.admin_valider_chauffeur(p_tel text, p_token text, p_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v uuid := public._auth_admin(p_tel, p_token);
+begin
+  update public.tricycles set valide = true where id = p_id;
+  if not found then raise exception 'CHAUFFEUR_INTROUVABLE'; end if;
+  insert into public.journal_actions (action, acteur_type, acteur_id, details)
+  values ('CHAUFFEUR_VALIDE', 'admin', v, jsonb_build_object('tricycle_id', p_id));
+end $$;
+
 -- ─── RPC : paramètres ───────────────────────────────────────────────────────
 
 -- Lecture publique (page d'accueil, écran « Solde insuffisant ») : seul le
@@ -1677,4 +1800,6 @@ revoke execute on function public.purge_positions_live()      from public, anon,
 revoke execute on function public._today_abj()                from public, anon, authenticated;
 revoke execute on function public._phone_ci(text)             from public, anon, authenticated;
 revoke execute on function public._debiter_chauffeur(uuid)    from public, anon, authenticated;
+revoke execute on function public._en_essai(timestamptz)       from public, anon, authenticated;
+revoke execute on function public._fin_essai_nouveau()         from public, anon, authenticated;
 revoke execute on function public._journaliser_facturation(uuid) from public, anon, authenticated;

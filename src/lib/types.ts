@@ -32,12 +32,16 @@ export type Tricycle = {
   /** Prix fixé par le chauffeur pour 1000 L, en FCFA. */
   prix_1000: number;
   statut: CompteStatut;
-  /** Points (1 FCFA = 1 point) : 2500 offerts à l'inscription, -50 par commande créée. */
+  /** Points (1 FCFA = 1 point) : 0 à l'inscription, -50 par commande créée après l'essai gratuit. */
   solde_points: number;
   /** Remis à 0 dès qu'il atteint 5000 (déclenche +50 points de fidélité). */
   total_points_utilises: number;
   /** true dès que solde_points < 50 : invisible des clients tant qu'il n'est pas rechargé. */
   is_offline: boolean;
+  /** Fin de son essai gratuit (points illimités jusque-là). */
+  essai_fin: string | null;
+  /** Anti-intrusion : invisible des clients tant que l'admin ne l'a pas validé. */
+  valide: boolean;
 };
 
 export type Client = {
@@ -50,10 +54,12 @@ export type Client = {
   long: number | null;
   statut: CompteStatut;
   date_paiement: string | null;
-  /** Points (1 FCFA = 1 point) : 1200 offerts à l'inscription, -100 par commande créée. */
+  /** Points (1 FCFA = 1 point) : 0 à l'inscription, -100 par commande créée après l'essai gratuit. */
   solde_points: number;
   /** Créé par un chauffeur (saisie directe), sans compte utilisable tant qu'il ne s'inscrit pas. */
   is_temporary: boolean;
+  /** Fin de son essai gratuit (points illimités jusque-là). */
+  essai_fin: string | null;
 };
 
 export type Commande = {
@@ -142,7 +148,13 @@ export type ChauffeurProfile = {
   cite_nom: string;
   solde_points: number;
   total_points_utilises: number;
+  /** Bloqué faute de points (calculé : jamais pendant l'essai gratuit). */
   is_offline: boolean;
+  essai_fin: string | null;
+  /** false tant que l'admin n'a pas validé son inscription. */
+  valide: boolean;
+  /** Code provisoire donné par l'admin : il doit en choisir un nouveau. */
+  pin_provisoire: boolean;
 };
 
 export type ChauffeurCommande = Pick<
@@ -177,7 +189,7 @@ export type CommandeManuelle = {
 };
 
 /** depot_phone : numéro qui reçoit les recharges Wave, forme canonique 0XXXXXXXXX. */
-export type Settings = { trial_ends_at: string; depot_phone: string };
+export type Settings = { trial_ends_at: string; depot_phone: string; essai_mois: number };
 
 /** Agrégats d'un mois (renvoyés par get_yearly_stats). */
 export type StatsMois = {
@@ -219,6 +231,9 @@ export type ClientProfile = {
   lot_numero: string;
   statut: CompteStatut;
   solde_points: number;
+  essai_fin: string | null;
+  /** Code provisoire donné par l'admin : il doit en choisir un nouveau. */
+  pin_provisoire: boolean;
 };
 
 export type AdminProfile = { email: string };
@@ -298,6 +313,8 @@ export interface Backend {
   clientCommandeActive(c: Creds): Promise<Suivi | null>;
   /** Annulation tant que le chauffeur n'est pas parti (QUEUED/ASSIGNED/PROGRAMMED) — points rendus. */
   clientAnnulerCommande(c: Creds, commandeId: string): Promise<void>;
+  /** Nouveau code PIN choisi par le client (obligatoire après un code provisoire). */
+  clientChangerPin(c: Creds, nouveau: string): Promise<void>;
   /** Écoute la position live d'une commande ARRIVING. Renvoie la fonction de désabonnement. */
   subscribePosition(commandeId: string, onPosition: (p: LivePosition) => void): () => void;
 
@@ -318,6 +335,8 @@ export interface Backend {
   /** « J'arrive chez toi » : EN_COURS → ARRIVING, démarre le partage GPS (10 min max). */
   chauffeurArriver(c: Creds, commandeId: string): Promise<void>;
   chauffeurLivrer(c: Creds, commandeId: string): Promise<void>;
+  /** Nouveau code PIN choisi par le chauffeur (obligatoire après un code provisoire). */
+  chauffeurChangerPin(c: Creds, nouveau: string): Promise<void>;
 
   admin: {
     load(c: Creds): Promise<AdminData>;
@@ -327,6 +346,10 @@ export interface Backend {
     /** Recharge manuelle après paiement Wave (client ou chauffeur). Montant multiple de 50 obligatoire ; débloque le chauffeur si le solde repasse ≥ 50. */
     rechargerPoints(c: Creds, table: "tricycles" | "clients", id: string, montant: number): Promise<void>;
     changerMotDePasse(c: Creds, nouveau: string): Promise<void>;
+    /** Code oublié : génère un code provisoire à 4 chiffres (à donner par téléphone). */
+    reinitialiserPin(c: Creds, table: "tricycles" | "clients", id: string): Promise<string>;
+    /** Anti-intrusion : rend un chauffeur nouvellement inscrit visible des clients. */
+    validerChauffeur(c: Creds, id: string): Promise<void>;
     /** Change settings.depot_phone (numéro ivoirien obligatoire). */
     setDepotPhone(c: Creds, tel: string): Promise<void>;
     /** Toutes les agrégations de /admin/statistiques en un appel. */

@@ -9,8 +9,9 @@ import { Icon } from "@/components/icons";
 import { Badge, Btn, ErrorBox, Field, Logo, PhoneInput, PinInput, Spinner } from "@/components/ui";
 import { api } from "@/lib/data-provider";
 import { errorMessage } from "@/lib/errors";
-import { normalizePhone } from "@/lib/phone";
+import { formatPhone, normalizePhone } from "@/lib/phone";
 import { clearSession, openSession, readSession } from "@/lib/session";
+import { useDepotPhone } from "@/lib/useDepotPhone";
 
 /** Connexion client ET chauffeur, sans choix de rôle : le serveur reconnaît le
  *  numéro (auth_login 'auto') et renvoie vers le bon espace. L'admin ne se
@@ -22,6 +23,8 @@ export default function LoginPage() {
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [oubli, setOubli] = useState(false);
+  const depot = useDepotPhone();
 
   // Déjà connecté → direct sur son tableau de bord (jeton revérifié par le serveur).
   useEffect(() => {
@@ -82,6 +85,18 @@ export default function LoginPage() {
             {busy ? "Un instant…" : "Entrer"} {!busy && <Icon name="arrow" size={20} />}
           </Btn>
         </form>
+
+        <div className="mt-4 text-center">
+          <button type="button" onClick={() => setOubli((v) => !v)} className="text-sm font-bold text-azur underline-offset-4 hover:underline">
+            Code oublié ?
+          </button>
+          {oubli && (
+            <p className="mt-2 rounded-2xl border-brut border-ink bg-sky p-4 text-left text-sm font-medium text-ink/80">
+              Appelle l&apos;administrateur au <strong>{depot ? formatPhone(depot) : "…"}</strong>. Après vérification, il te donne un code provisoire :
+              connecte-toi avec, puis choisis ton nouveau code.
+            </p>
+          )}
+        </div>
 
         <div className="mt-6 text-center">
           <Link href="/inscription" className="inline-flex items-center gap-1.5 text-sm font-bold text-ink/60 hover:text-azur">

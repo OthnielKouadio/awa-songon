@@ -16,7 +16,7 @@ import { Badge, ErrorBox, Logo, PulseDot, Spinner } from "@/components/ui";
 import { usePrivateBase } from "@/components/PrivateBase";
 import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
-import { byNom, dateLongue, jourAbidjan } from "@/lib/format";
+import { byNom } from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
 import type { AdminData, Creds } from "@/lib/types";
 
@@ -124,15 +124,18 @@ function Console({ creds }: { creds: Creds }) {
     };
   }, [load]);
 
-  const enEssai = data ? jourAbidjan() <= data.settings.trial_ends_at : false;
+  const aValider = data ? data.tricycles.filter((t) => !t.valide).length : 0;
 
   return (
     <div className="mt-6 space-y-6">
-      {data && enEssai && (
-        <div role="status" className="flex items-center gap-2 rounded-xl border border-ink/15 bg-mist px-4 py-2.5 text-sm font-medium text-ink/70">
-          <span className="h-1.5 w-1.5 rounded-full bg-azur" aria-hidden />
-          Période d&apos;essai jusqu&apos;au {dateLongue(data.settings.trial_ends_at)}
-        </div>
+      {aValider > 0 && (
+        <button
+          onClick={() => setTab("chauffeurs")}
+          className="flex w-full items-center gap-2 rounded-xl border-brut border-ink bg-sky px-4 py-2.5 text-left text-sm font-bold transition-colors hover:bg-white"
+        >
+          <span className="h-2 w-2 rounded-full bg-danger" aria-hidden />
+          {aValider} chauffeur{aValider > 1 ? "s" : ""} en attente de validation — voir l&apos;onglet Chauffeurs
+        </button>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <nav className="flex flex-wrap gap-2" aria-label="Sections">

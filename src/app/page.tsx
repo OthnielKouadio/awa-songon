@@ -8,12 +8,11 @@ import { Icon } from "@/components/icons";
 import { Badge, Btn, Logo, Spinner } from "@/components/ui";
 import {
   BONUS_FIDELITE_POINTS,
-  BONUS_INSCRIPTION,
   CITERNES_FIDELITE,
   COUT_COMMANDE_CLIENT,
   formatFcfa,
   formatPoints,
-  LIVRAISONS_ESSAI,
+  ESSAI_MOIS,
   POINTS_PAR_LIVRAISON,
   RECHARGE_MIN_FCFA,
   RECHARGE_MULTIPLE,
@@ -147,11 +146,11 @@ function SectionChauffeur() {
           <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/15">
             <Icon name="drop" size={24} />
           </span>
-          <p className="title-md mt-4 !text-xl text-white">1 mois d&apos;essai gratuit — {formatPoints(BONUS_INSCRIPTION)} offerts</p>
+          <p className="title-md mt-4 !text-xl text-white">{ESSAI_MOIS} mois d&apos;essai gratuit</p>
           <p className="mt-2 font-medium text-white/85">
-            À l&apos;inscription, recevez {formatPoints(BONUS_INSCRIPTION)} GRATUITS. 1 point = 1 franc. 1 livraison = {POINTS_PAR_LIVRAISON} points.{" "}
-            <strong>{formatPoints(BONUS_INSCRIPTION)} = {LIVRAISONS_ESSAI} livraisons 100% gratuites.</strong> Aucune commission pendant vos {LIVRAISONS_ESSAI} premières
-            courses. Vous testez, vous encaissez, vous êtes convaincu. Après ça, vous rechargez.
+            Pendant vos {ESSAI_MOIS} premiers mois, <strong>livraisons illimitées, aucune commission.</strong> Vous testez, vous encaissez, vous êtes
+            convaincu. Ensuite, vous rechargez vos points : 1 point = 1 franc, 1 livraison = {POINTS_PAR_LIVRAISON} points. On vous prévient 3 jours
+            avant la fin de l&apos;essai.
           </p>
         </motion.div>
 
@@ -196,13 +195,13 @@ function Tarifs() {
         <div className="brut-sm border-brut p-5">
           <Badge tone="sky">Client</Badge>
           <p className="mt-3 font-bold">
-            {formatFcfa(COUT_COMMANDE_CLIENT)} par commande, recharge min {formatFcfa(RECHARGE_MIN_FCFA)}.
+            {ESSAI_MOIS} mois gratuits, puis {formatFcfa(COUT_COMMANDE_CLIENT)} par commande (recharge min {formatFcfa(RECHARGE_MIN_FCFA)}).
           </p>
         </div>
         <div className="brut-sm border-brut p-5">
           <Badge tone="sky">Chauffeur</Badge>
           <p className="mt-3 font-bold">
-            {formatFcfa(POINTS_PAR_LIVRAISON)} par livraison, {formatPoints(BONUS_INSCRIPTION)} offerts.
+            {ESSAI_MOIS} mois gratuits, puis {formatFcfa(POINTS_PAR_LIVRAISON)} par livraison.
           </p>
         </div>
       </div>
@@ -214,8 +213,8 @@ function Tarifs() {
 
 const FAQ_ITEMS = [
   {
-    q: `Que se passe-t-il après mes ${formatPoints(BONUS_INSCRIPTION)} gratuits ?`,
-    r: "Votre compte est suspendu : vous n'apparaissez plus aux clients. Il faut recharger pour recevoir à nouveau des commandes.",
+    q: `Que se passe-t-il après mes ${ESSAI_MOIS} mois d'essai gratuit ?`,
+    r: "Vous rechargez vos points par Wave pour continuer. Sans recharge, votre compte est mis en pause : vous n'apparaissez plus aux clients jusqu'à la prochaine recharge.",
   },
   {
     q: `Le bonus des ${formatPoints(SEUIL_FIDELITE)} est automatique ?`,

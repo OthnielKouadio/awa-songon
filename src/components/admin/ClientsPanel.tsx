@@ -1,15 +1,19 @@
 "use client";
 
+import { useState } from "react";
 import { api } from "@/lib/data-provider";
-import { jour } from "@/lib/format";
+import { enEssai, jour } from "@/lib/format";
 import type { AdminData, CompteStatut, Creds } from "@/lib/types";
 import { useConfirm } from "../CustomModal";
 import { Badge, ErrorBox, StatutBadge, Table, TableBtn, Td, Th } from "../ui";
-import { Panel, useMutation } from "./shared";
+import { correspond, Panel, RechercheCompte, useCodeProvisoire, useMutation } from "./shared";
 
 export default function ClientsPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, error } = useMutation(reload);
   const { confirm, ConfirmDialog } = useConfirm();
+  const pin = useCodeProvisoire(creds, reload);
+  const [recherche, setRecherche] = useState("");
+  const clients = data.clients.filter((c) => correspond(c, recherche));
   const citeNom = (id: string) => data.cites.find((c) => c.id === id)?.nom ?? "?";
 
   function setStatut(id: string, statut: CompteStatut) {
@@ -28,9 +32,10 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
 
   return (
     <Panel title="Clients">
-      {error && (
+      <RechercheCompte value={recherche} onChange={setRecherche} />
+      {(error || pin.error) && (
         <div className="mb-4">
-          <ErrorBox>{error}</ErrorBox>
+          <ErrorBox>{error || pin.error}</ErrorBox>
         </div>
       )}
       <Table>
@@ -40,13 +45,14 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
             <Th>Téléphone</Th>
             <Th>Cité</Th>
             <Th>Lot</Th>
+            <Th>Essai</Th>
             <Th>Statut</Th>
             <Th>Dernier paiement</Th>
             <Th>Actions</Th>
           </tr>
         </thead>
         <tbody>
-          {data.clients.map((c) => {
+          {clients.map((c) => {
             const nb = data.commandes.filter((cm) => cm.client_id === c.id).length;
             return (
               <tr key={c.id}>
@@ -67,6 +73,9 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
                 <Td>{citeNom(c.cite_id)}</Td>
                 <Td>{c.lot_numero}</Td>
                 <Td>
+                  <EssaiCell fin={c.essai_fin} />
+                </Td>
+                <Td>
                   <StatutBadge statut={c.statut} />
                 </Td>
                 <Td>{c.date_paiement ? jour(c.date_paiement) : "—"}</Td>
@@ -83,6 +92,7 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
                         Bloquer
                       </TableBtn>
                     )}
+                    {!c.is_temporary && <TableBtn onClick={() => void pin.generer("clients", c.id, c.nom)}>Code provisoire</TableBtn>}
                     <TableBtn tone="danger" onClick={() => remove(c.nom, c.id)}>
                       Supprimer
                     </TableBtn>
@@ -94,7 +104,15 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
         </tbody>
       </Table>
       {data.clients.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun client inscrit.</p>}
+      {data.clients.length > 0 && clients.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun client ne correspond à « {recherche} ».</p>}
       {ConfirmDialog}
+      {pin.dialog}
     </Panel>
   );
+}
+
+/** Essai gratuit en cours (avec sa date de fin) ou terminé. */
+export function EssaiCell({ fin }: { fin: string | null }) {
+  if (!fin) return <>—</>;
+  return enEssai(fin) ? <Badge tone="sky">Jusqu&apos;au {jour(fin)}</Badge> : <Badge tone="gray">Terminé</Badge>;
 }

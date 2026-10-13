@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import GeoPrompt from "@/components/GeoPrompt";
+import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner } from "@/components/compte";
 import { Icon } from "@/components/icons";
 import OrderModal from "@/components/OrderModal";
 import OrderTracker from "@/components/OrderTracker";
@@ -12,10 +13,10 @@ import { useConfirm } from "@/components/CustomModal";
 import { Badge, Btn, CiteBadge, ErrorBox, Logo, Spinner, StatutBadge, Toggle } from "@/components/ui";
 import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
-import { formatPoints, SOLDE_MIN_CLIENT } from "@/lib/format";
+import { enEssai, formatPoints, SOLDE_MIN_CLIENT } from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
 import type { ClientProfile, Creds, Suivi, TricycleDispo } from "@/lib/types";
-import { useEssaiGratuit } from "@/lib/useEssaiGratuit";
+import { useDepotPhone } from "@/lib/useDepotPhone";
 import { useGeo } from "@/lib/useGeo";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 
@@ -69,8 +70,9 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const load = useCallback(async () => {
     try {
       const p = await api.clientProfil(creds);
-      // Solde de points insuffisant : on sort avant même de charger la file ou l'historique.
-      if (p.solde_points < SOLDE_MIN_CLIENT) {
+      // Essai terminé et solde insuffisant : on sort avant même de charger la file
+      // ou l'historique. Pendant l'essai gratuit, les points sont illimités.
+      if (!enEssai(p.essai_fin) && p.solde_points < SOLDE_MIN_CLIENT) {
         router.replace("/bloque");
         return;
       }
@@ -116,6 +118,20 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   if (!profile) return error ? <Wrap onLogout={onLogout}><ErrorBox>{error}</ErrorBox></Wrap> : <Wrap onLogout={onLogout}><Spinner /></Wrap>;
 
+  // Code provisoire donné par l'admin (code oublié) : nouveau code obligatoire avant tout.
+  if (profile.pin_provisoire) {
+    return (
+      <Wrap onLogout={onLogout}>
+        <ChangerPinObligatoire
+          onSubmit={async (pin) => {
+            await api.clientChangerPin(creds, pin);
+            await load();
+          }}
+        />
+      </Wrap>
+    );
+  }
+
   const bloque = profile.statut === "BLOQUE";
   const livree = active?.status === "LIVREE";
 
@@ -129,7 +145,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   async function annuler() {
     if (!active) return;
-    const ok = await confirm("Tes 100 points te seront rendus.", {
+    const ok = await confirm(enEssai(profile?.essai_fin) ? "Tu pourras en repasser une autre ensuite." : "Tes 100 points te seront rendus.", {
       title: "Annuler ta commande ?",
       danger: true,
       confirmLabel: "Oui, annuler",
@@ -252,7 +268,7 @@ function Wrap({
   profile?: ClientProfile;
   children: React.ReactNode;
 }) {
-  const essai = useEssaiGratuit();
+  const depot = useDepotPhone();
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-5 sm:px-6">
       <header className="flex items-center justify-between gap-3">
@@ -267,13 +283,19 @@ function Wrap({
           <CiteBadge>
             Tu commandes à {profile.cite_nom} · Lot {profile.lot_numero}
           </CiteBadge>
-          {essai === true && <Badge tone="sky">Essai gratuit</Badge>}
-          {essai === false && (
+          {enEssai(profile.essai_fin) ? (
+            <EssaiBadge fin={profile.essai_fin} />
+          ) : (
             <>
               <StatutBadge statut={profile.statut} />
               <PointsBadge soldePoints={profile.solde_points} />
             </>
           )}
+        </div>
+      )}
+      {profile && (
+        <div className="mt-4">
+          <FinEssaiBanner fin={profile.essai_fin} depot={depot} />
         </div>
       )}
 

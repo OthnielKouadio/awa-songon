@@ -50,7 +50,7 @@ import type {
 } from "./types";
 
 export const MOCK_EVENT = "awa:mock";
-const KEY = "awa:mock:v9"; // v9 : admin identifié par email
+const KEY = "awa:mock:v10"; // v10 : essai gratuit par compte, validation chauffeur, code provisoire
 const DEFAULT_DEPOT_PHONE = "0789855418";
 // Aucun identifiant admin en dur : la démo lit les siens dans l'environnement
 // (local uniquement). Sans mot de passe défini, le compte admin démo est
@@ -58,12 +58,12 @@ const DEFAULT_DEPOT_PHONE = "0789855418";
 const DEMO_ADMIN_EMAIL = (process.env.NEXT_PUBLIC_DEMO_ADMIN_EMAIL ?? "").trim().toLowerCase();
 const DEMO_ADMIN_PASSWORD = process.env.NEXT_PUBLIC_DEMO_ADMIN_PASSWORD ?? "";
 
-type Auth = { pin: string; token: string | null; essais: number; bloque: number | null };
+type Auth = { pin: string; token: string | null; essais: number; bloque: number | null; pin_provisoire?: boolean };
 type MockTricycle = Tricycle & Auth;
 type MockClient = Client & Auth;
 type MockAdmin = { email: string; password: string; token: string | null; essais: number; bloque: number | null };
 /** jour_file : jour (UTC) où la commande est entrée en QUEUED — sert au rollover de 23h59. */
-type MockCommande = Commande & { jour_file?: string };
+type MockCommande = Commande & { jour_file?: string; client_debite?: boolean; chauffeur_debite?: boolean };
 /** Équivalent de positions_live : une position par tricycle, TTL 5 min. */
 type MockPosition = { commande_id: string; lat: number; long: number; maj: string };
 
@@ -90,6 +90,14 @@ function uid(): string {
 }
 const token = () => uid().replace(/-/g, "") + uid().replace(/-/g, "");
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60000).toISOString();
+const enEssai = (fin: string | null | undefined) => !!fin && Date.now() < Date.parse(fin);
+function finEssaiNouveau(db: DB): string {
+  const d = new Date();
+  d.setMonth(d.getMonth() + (db.settings.essai_mois ?? 2));
+  return d.toISOString();
+}
+/** Chauffeur bloqué faute de points (jamais pendant son essai). */
+const sansPoints = (t: MockTricycle) => !enEssai(t.essai_fin) && (t.is_offline || t.solde_points < 50);
 const today = () => jourAbidjan();
 /** "AAAA-MM-JJ" + h heures, heure d'Abidjan (UTC+0). */
 const aHeure = (jour: string, h: number) => new Date(`${jour}T${String(h).padStart(2, "0")}:00:00Z`).toISOString();
@@ -124,7 +132,8 @@ function seed(): DB {
     prix_1000: number,
     statut: CompteStatut = "PAYE",
     solde_points = 2500,
-    is_offline = false
+    is_offline = false,
+    essai_fin: string | null = minutesAgo(-60 * 24 * 45)
   ): MockTricycle => ({
     id,
     nom,
@@ -138,6 +147,8 @@ function seed(): DB {
     solde_points,
     total_points_utilises: 0,
     is_offline,
+    essai_fin,
+    valide: true,
     pin: "1234",
     token: null,
     essais: 0,
@@ -152,7 +163,8 @@ function seed(): DB {
     lat: number | null,
     long: number | null,
     statut: CompteStatut = "PAYE",
-    solde_points = 1200
+    solde_points = 1200,
+    essai_fin: string | null = minutesAgo(-60 * 24 * 45)
   ): MockClient => ({
     id,
     nom,
@@ -165,6 +177,7 @@ function seed(): DB {
     date_paiement: statut === "PAYE" ? minutesAgo(60 * 24 * 3) : null,
     solde_points,
     is_temporary: false,
+    essai_fin,
     pin: "1234",
     token: null,
     essais: 0,
@@ -239,12 +252,12 @@ function seed(): DB {
       // Moussa est en pause : ses nouvelles commandes partent en QUEUED (aujourd'hui).
       tri(moussaId, "Moussa", "0700000003", c2, s3, "PAUSED", "A_LA_SOURCE", 3000),
       // Koffi : solde de points épuisé (démo de la page bloquante "Solde épuisé").
-      tri(koffiId, "Koffi", "0700000004", c3, s4, "OFFLINE", "A_LA_SOURCE", 2000, "PAYE", 20, true),
+      tri(koffiId, "Koffi", "0700000004", c3, s4, "OFFLINE", "A_LA_SOURCE", 2000, "PAYE", 20, true, minutesAgo(60 * 24 * 3)),
     ],
     clients: [
       cli(fatouId, "Fatou", "0701020304", c1, "12", 5.3868, -4.2705, "PAYE", 1200),
       // Issa : solde sous 100 (démo de la page bloquante "Solde insuffisant").
-      cli(issaId, "Issa", "0705060708", c1, "7", null, null, "IMPAYE", 50),
+      cli(issaId, "Issa", "0705060708", c1, "7", null, null, "IMPAYE", 50, minutesAgo(60 * 24 * 3)),
       cli(ayaId, "Aya", "0709101112", c1, "21", 5.3852, -4.2671, "PAYE", 1200),
       mariam,
     ],
@@ -269,7 +282,7 @@ function seed(): DB {
     ],
     positions: {},
     journal: [],
-    settings: { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE },
+    settings: { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE, essai_mois: 2 },
     admin: { email: DEMO_ADMIN_EMAIL, password: DEMO_ADMIN_PASSWORD || `!${token()}`, token: null, essais: 0, bloque: null },
   };
 }
@@ -453,8 +466,9 @@ function read(): DB {
   }
   db.positions ??= {};
   db.journal ??= [];
-  db.settings ??= { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE };
+  db.settings ??= { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE, essai_mois: 2 };
   db.settings.depot_phone ??= DEFAULT_DEPOT_PHONE;
+  db.settings.essai_mois ??= 2;
   if (cron(db)) write(db, false);
   return db;
 }
@@ -502,7 +516,10 @@ function chauffeurProfile(db: DB, t: MockTricycle): ChauffeurProfile {
     cite_nom: ci?.nom ?? "?",
     solde_points: t.solde_points,
     total_points_utilises: t.total_points_utilises,
-    is_offline: t.is_offline,
+    is_offline: sansPoints(t),
+    essai_fin: t.essai_fin,
+    valide: t.valide,
+    pin_provisoire: !!t.pin_provisoire,
   };
 }
 
@@ -517,6 +534,8 @@ function clientProfile(db: DB, cl: MockClient): ClientProfile {
     lot_numero: cl.lot_numero,
     statut: cl.statut,
     solde_points: cl.solde_points,
+    essai_fin: cl.essai_fin,
+    pin_provisoire: !!cl.pin_provisoire,
   };
 }
 
@@ -552,8 +571,10 @@ function suivi(db: DB, c: Commande): Suivi {
   };
 }
 
-/** -50 points au chauffeur pour une commande reçue (+ fidélité, passage is_offline). */
-function debiterChauffeur(t: MockTricycle) {
+/** -50 points au chauffeur pour une commande reçue (+ fidélité, passage is_offline).
+ *  Rien pendant son essai gratuit. Renvoie true si débité. */
+function debiterChauffeur(t: MockTricycle): boolean {
+  if (enEssai(t.essai_fin)) return false;
   t.solde_points -= 50;
   t.total_points_utilises += 50;
   if (t.total_points_utilises >= 5000) {
@@ -561,6 +582,7 @@ function debiterChauffeur(t: MockTricycle) {
     t.total_points_utilises = 0;
   }
   t.is_offline = t.solde_points < 50;
+  return true;
 }
 
 /** Retire une commande de la file : les suivantes remontent d'un cran. */
@@ -630,7 +652,7 @@ export const mock: Backend = {
   async fetchTricyclesDispo(citeId) {
     const db = read();
     return db.tricycles
-      .filter((t) => t.cite_id === citeId && t.statut !== "BLOQUE" && !t.is_offline)
+      .filter((t) => t.cite_id === citeId && t.statut !== "BLOQUE" && t.valide && !sansPoints(t))
       .map((t) => {
         const s = db.sources.find((x) => x.id === t.source_id);
         return {
@@ -656,9 +678,10 @@ export const mock: Backend = {
         .filter((x) => x.client_id === cl.id && isActive(x.status))
         .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
       if (deja) throw tropDeCommandes(shortId(deja.id));
-      if (cl.solde_points < 100) return fail("SOLDE_INSUFFISANT_CLIENT");
+      const clientEssai = enEssai(cl.essai_fin);
+      if (!clientEssai && cl.solde_points < 100) return fail("SOLDE_INSUFFISANT_CLIENT");
       const t = db.tricycles.find((x) => x.id === c.tricycleId);
-      if (!t || t.statut === "BLOQUE" || t.is_offline || t.solde_points < 50) return fail("TRICYCLE_INDISPONIBLE");
+      if (!t || t.statut === "BLOQUE" || !t.valide || sansPoints(t)) return fail("TRICYCLE_INDISPONIBLE");
       if (t.cite_id !== cl.cite_id) return fail("HORS_ZONE");
 
       const gpsIn = c.gps && Math.abs(c.gps.lat) <= 90 && Math.abs(c.gps.long) <= 180 ? c.gps : null;
@@ -710,8 +733,9 @@ export const mock: Backend = {
       };
       db.commandes.push(commande);
 
-      cl.solde_points -= 100;
-      debiterChauffeur(t);
+      if (!clientEssai) cl.solde_points -= 100;
+      commande.client_debite = !clientEssai;
+      commande.chauffeur_debite = debiterChauffeur(t);
 
       return commande.id;
     });
@@ -814,9 +838,11 @@ export const mock: Backend = {
           lot_numero: lot,
           lat: gps?.lat ?? null,
           long: gps?.long ?? null,
-          solde_points: 1200,
+          solde_points: 0,
+          essai_fin: finEssaiNouveau(db),
           is_temporary: false,
           pin: i.pin,
+          pin_provisoire: false,
           token: token(),
         });
         return { creds: { role: "client" as const, tel, token: temp.token! }, profile: clientProfile(db, temp) };
@@ -831,8 +857,9 @@ export const mock: Backend = {
         long: gps?.long ?? null,
         statut: "IMPAYE",
         date_paiement: null,
-        // Bonus d'essai à l'inscription : 1200 points = ~12 commandes gratuites.
-        solde_points: 1200,
+        // Essai gratuit (points illimités) puis recharge : solde de départ 0.
+        solde_points: 0,
+        essai_fin: finEssaiNouveau(db),
         is_temporary: false,
         pin: i.pin,
         token: token(),
@@ -866,10 +893,13 @@ export const mock: Backend = {
         etat: "A_LA_SOURCE",
         prix_1000: i.prix,
         statut: "IMPAYE",
-        // Bonus d'essai à l'inscription : 2500 points = 50 livraisons gratuites.
-        solde_points: 2500,
+        // Essai gratuit (points illimités) puis recharge : solde de départ 0.
+        solde_points: 0,
         total_points_utilises: 0,
         is_offline: false,
+        essai_fin: finEssaiNouveau(db),
+        // Anti-intrusion : invisible des clients tant que l'admin ne l'a pas validé.
+        valide: false,
         pin: i.pin,
         token: token(),
         essais: 0,
@@ -894,6 +924,15 @@ export const mock: Backend = {
     return cmd ? suivi(db, cmd) : null;
   },
 
+  async clientChangerPin(c, nouveau) {
+    tx((db) => {
+      const cl = authClient(db, c);
+      if (!/^[0-9]{4}$/.test(nouveau)) return fail("PIN_INVALIDE");
+      cl.pin = nouveau;
+      cl.pin_provisoire = false;
+    });
+  },
+
   async clientAnnulerCommande(c, commandeId) {
     tx((db) => {
       const cl = authClient(db, c);
@@ -901,9 +940,10 @@ export const mock: Backend = {
       if (!cmd || !COMMANDES_ANNULABLES.includes(cmd.status)) return fail("ANNULATION_IMPOSSIBLE");
       if (cmd.annulable_jusqua && Date.now() >= new Date(cmd.annulable_jusqua).getTime()) return fail("ANNULATION_TARDIVE");
       sortirDeLaFile(db, cmd, "ANNULEE");
-      if (cmd.source === "app") cl.solde_points += 100;
+      const m = cmd as MockCommande;
+      if (cmd.source === "app" && m.client_debite !== false) cl.solde_points += 100;
       const t = db.tricycles.find((x) => x.id === cmd.tricycle_id);
-      if (t) {
+      if (t && m.chauffeur_debite !== false) {
         t.solde_points += 50;
         if (t.solde_points >= 50) t.is_offline = false;
       }
@@ -979,10 +1019,11 @@ export const mock: Backend = {
       if (m.quantiteBidons != null && !(Number.isInteger(m.quantiteBidons) && m.quantiteBidons >= 1 && m.quantiteBidons <= 200)) return fail("QUANTITE_INVALIDE");
       if (note && note.length > 280) return fail("NOTE_INVALIDE");
       if (t.statut === "BLOQUE") return fail("COMPTE_BLOQUE");
-      if (t.is_offline || t.solde_points < 50) return fail("SOLDE_INSUFFISANT");
+      if (!t.valide) return fail("COMPTE_EN_ATTENTE");
+      if (sansPoints(t)) return fail("SOLDE_INSUFFISANT");
 
       let cl = db.clients
-        .filter((x) => [tel, `+225${tel}`, `00225${tel}`].includes(x.telephone))
+        .filter((x) => x.telephone === tel)
         .sort((a, b) => Number(a.is_temporary) - Number(b.is_temporary))[0];
       if (cl) {
         if (cl.cite_id !== t.cite_id) return fail("HORS_ZONE");
@@ -1004,6 +1045,7 @@ export const mock: Backend = {
           date_paiement: null,
           solde_points: 0,
           is_temporary: true,
+          essai_fin: null,
           pin: `!${token()}`,
           token: null,
           essais: 0,
@@ -1036,7 +1078,8 @@ export const mock: Backend = {
         created_at: new Date().toISOString(),
       };
       db.commandes.push(commande);
-      debiterChauffeur(t);
+      commande.client_debite = false;
+      commande.chauffeur_debite = debiterChauffeur(t);
       db.journal.push({
         action: "COMMANDE_MANUELLE",
         acteur_id: t.id,
@@ -1055,11 +1098,21 @@ export const mock: Backend = {
     );
   },
 
+  async chauffeurChangerPin(c, nouveau) {
+    tx((db) => {
+      const t = authTricycle(db, c);
+      if (!/^[0-9]{4}$/.test(nouveau)) return fail("PIN_INVALIDE");
+      t.pin = nouveau;
+      t.pin_provisoire = false;
+    });
+  },
+
   async chauffeurSetStatus(c, status) {
     tx((db) => {
       const t = authTricycle(db, c);
       if (status !== "OFFLINE" && t.statut === "BLOQUE") return fail("COMPTE_BLOQUE");
-      if (status !== "OFFLINE" && t.is_offline) return fail("SOLDE_INSUFFISANT");
+      if (status !== "OFFLINE" && !t.valide) return fail("COMPTE_EN_ATTENTE");
+      if (status !== "OFFLINE" && sansPoints(t)) return fail("SOLDE_INSUFFISANT");
       t.status = status;
       if (status === "ACTIVE") {
         // Reprise : ses commandes QUEUED (et PROGRAMMED du jour) lui sont assignées, FIFO conservé.
@@ -1158,7 +1211,7 @@ export const mock: Backend = {
       return {
         cites: db.cites,
         sources: db.sources,
-        tricycles: db.tricycles.map(({ id, nom, telephone, cite_id, source_id, status, etat, prix_1000, statut, solde_points, total_points_utilises, is_offline }) => ({
+        tricycles: db.tricycles.map(({ id, nom, telephone, cite_id, source_id, status, etat, prix_1000, statut, solde_points, total_points_utilises, is_offline, essai_fin, valide }) => ({
           id,
           nom,
           telephone,
@@ -1171,9 +1224,11 @@ export const mock: Backend = {
           solde_points,
           total_points_utilises,
           is_offline,
+          essai_fin,
+          valide,
         })),
         settings: db.settings,
-        clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, solde_points, is_temporary }) => ({
+        clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, solde_points, is_temporary, essai_fin }) => ({
           is_temporary,
           id,
           nom,
@@ -1185,6 +1240,7 @@ export const mock: Backend = {
           statut,
           date_paiement,
           solde_points,
+          essai_fin,
         })),
         commandes: db.commandes.map(({ jour_file: _, ...cmd }) => cmd).sort((a, b) => b.created_at.localeCompare(a.created_at)),
       };
@@ -1280,6 +1336,26 @@ export const mock: Backend = {
         authAdmin(db, c);
         if (!nouveau || nouveau.length < 10) return fail("MDP_INVALIDE");
         db.admin.password = nouveau;
+      });
+    },
+
+    async reinitialiserPin(c, table, id) {
+      return tx((db) => {
+        authAdmin(db, c);
+        const e = table === "tricycles" ? db.tricycles.find((x) => x.id === id) : db.clients.find((x) => x.id === id && !x.is_temporary);
+        if (!e) return fail("COMPTE_INTROUVABLE");
+        const pin = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+        Object.assign(e, { pin, pin_provisoire: true, token: null, essais: 0, bloque: null });
+        return pin;
+      });
+    },
+
+    async validerChauffeur(c, id) {
+      tx((db) => {
+        authAdmin(db, c);
+        const t = db.tricycles.find((x) => x.id === id);
+        if (!t) return fail("CHAUFFEUR_INTROUVABLE");
+        t.valide = true;
       });
     },
 

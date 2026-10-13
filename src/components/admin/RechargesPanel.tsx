@@ -2,16 +2,17 @@
 
 import { useState } from "react";
 import { api } from "@/lib/data-provider";
-import { formatPoints, onlyDigits, RECHARGE_MULTIPLE, SOLDE_MIN, SOLDE_MIN_CLIENT } from "@/lib/format";
+import { enEssai, formatPoints, jour, onlyDigits, RECHARGE_MULTIPLE, SOLDE_MIN, SOLDE_MIN_CLIENT } from "@/lib/format";
 import type { AdminData, Creds } from "@/lib/types";
 import { Badge, ErrorBox, Table, TableBtn, Td, Th } from "../ui";
-import { Panel, useMutation } from "./shared";
+import { correspond, Panel, RechercheCompte, useMutation } from "./shared";
 
-type Titulaire = { id: string; nom: string; telephone: string; solde_points: number; hors_ligne?: boolean };
+type Titulaire = { id: string; nom: string; telephone: string; solde_points: number; essai_fin: string | null; hors_ligne?: boolean };
 
 export default function RechargesPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, error, setError } = useMutation(reload);
   const [inputs, setInputs] = useState<Record<string, string>>({});
+  const [recherche, setRecherche] = useState("");
 
   function recharger(table: "tricycles" | "clients", id: string) {
     const montant = Number(inputs[id]);
@@ -22,16 +23,22 @@ export default function RechargesPanel({ creds, data, reload }: { creds: Creds; 
     });
   }
 
-  const chauffeurs: Titulaire[] = data.tricycles.map((t) => ({ id: t.id, nom: t.nom, telephone: t.telephone, solde_points: t.solde_points, hors_ligne: t.is_offline }));
-  const clients: Titulaire[] = data.clients.map((c) => ({ id: c.id, nom: c.nom, telephone: c.telephone, solde_points: c.solde_points }));
+  const chauffeurs: Titulaire[] = data.tricycles
+    .filter((t) => correspond(t, recherche))
+    .map((t) => ({ id: t.id, nom: t.nom, telephone: t.telephone, solde_points: t.solde_points, essai_fin: t.essai_fin, hors_ligne: t.is_offline && !enEssai(t.essai_fin) }));
+  const clients: Titulaire[] = data.clients
+    .filter((c) => !c.is_temporary && correspond(c, recherche))
+    .map((c) => ({ id: c.id, nom: c.nom, telephone: c.telephone, solde_points: c.solde_points, essai_fin: c.essai_fin }));
 
   return (
     <Panel title="Recharges de points">
       <p className="mb-5 max-w-2xl text-sm font-medium text-ink/60">
         1 FCFA = 1 point — système 100% recharge, clients et chauffeurs. Un chauffeur sous {formatPoints(SOLDE_MIN)} n&apos;est plus visible
         des clients ; un client sous {formatPoints(SOLDE_MIN_CLIENT)} ne peut plus commander. Recharge ici après réception d&apos;un
-        paiement Wave — le montant doit être un multiple de {RECHARGE_MULTIPLE}.
+        paiement Wave — le montant doit être un multiple de {RECHARGE_MULTIPLE}. Pendant son essai gratuit, un compte n&apos;utilise pas ses
+        points : une recharge faite pendant l&apos;essai sert après.
       </p>
+      <RechercheCompte value={recherche} onChange={setRecherche} />
       {error && (
         <div className="mb-4">
           <ErrorBox>{error}</ErrorBox>
@@ -40,11 +47,11 @@ export default function RechargesPanel({ creds, data, reload }: { creds: Creds; 
 
       <h3 className="title-md mb-3 !text-lg">Chauffeurs</h3>
       <RechargeTable titulaires={chauffeurs} seuil={SOLDE_MIN} inputs={inputs} setInputs={setInputs} onRecharger={(id) => recharger("tricycles", id)} />
-      {chauffeurs.length === 0 && <p className="mt-3 font-semibold text-ink/60">Aucun chauffeur inscrit.</p>}
+      {chauffeurs.length === 0 && <p className="mt-3 font-semibold text-ink/60">{recherche ? "Aucun chauffeur ne correspond." : "Aucun chauffeur inscrit."}</p>}
 
       <h3 className="title-md mb-3 mt-8 !text-lg">Clients</h3>
       <RechargeTable titulaires={clients} seuil={SOLDE_MIN_CLIENT} inputs={inputs} setInputs={setInputs} onRecharger={(id) => recharger("clients", id)} />
-      {clients.length === 0 && <p className="mt-3 font-semibold text-ink/60">Aucun client inscrit.</p>}
+      {clients.length === 0 && <p className="mt-3 font-semibold text-ink/60">{recherche ? "Aucun client ne correspond." : "Aucun client inscrit."}</p>}
     </Panel>
   );
 }
@@ -75,7 +82,8 @@ function RechargeTable({
       </thead>
       <tbody>
         {titulaires.map((t) => {
-          const faible = t.solde_points < seuil;
+          const essai = enEssai(t.essai_fin);
+          const faible = !essai && t.solde_points < seuil;
           return (
             <tr key={t.id}>
               <Td>
@@ -87,6 +95,7 @@ function RechargeTable({
                   {formatPoints(t.solde_points)}
                   {t.hors_ligne && " · hors ligne"}
                 </Badge>
+                {essai && t.essai_fin && <span className="ml-2 text-xs font-semibold text-ink/55">essai jusqu&apos;au {jour(t.essai_fin)}</span>}
               </Td>
               <Td>
                 <div className="flex items-center gap-2">

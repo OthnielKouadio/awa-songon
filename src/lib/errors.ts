@@ -30,6 +30,8 @@ export const MESSAGES: Record<string, string> = {
   DOUBLON: "Cette valeur existe déjà.",
   REFUSE: "Action refusée : ton compte n'est pas administrateur.",
   COMPTE_BLOQUE: "Ton compte est bloqué. Contacte l'administrateur.",
+  COMPTE_EN_ATTENTE: "Ton compte attend la validation de l'administrateur.",
+  COMPTE_INTROUVABLE: "Compte introuvable.",
   MDP_INVALIDE: "Choisis un mot de passe d'au moins 10 caractères.",
   SOLDE_INSUFFISANT_CLIENT: "Solde insuffisant, veuillez recharger.",
   SOLDE_INSUFFISANT: "Solde de points insuffisant. Recharge pour continuer.",

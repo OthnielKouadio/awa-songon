@@ -167,29 +167,46 @@ Gérés **uniquement par l'admin**, jamais par le titulaire du compte.
 - **Chauffeur BLOQUÉ** : repasse OFFLINE automatiquement, disparaît de la liste publique, et ne peut plus se remettre actif ou en pause lui-même tant que l'admin ne le débloque pas.
 - Marquer un client **PAYÉ** enregistre la date de paiement (visible dans l'onglet Clients).
 
-## Points client — 1 FCFA = 1 point
+## Essai gratuit — 2 mois par compte, points illimités
 
-- **1200 points offerts à l'inscription** (≈ 12 commandes). Chaque commande coûte **100 points**, déduits à la création (rendus si le client annule).
+- Chaque nouveau compte (client **et** chauffeur) a **2 mois d'essai gratuit** à partir de son inscription (`clients.essai_fin` / `tricycles.essai_fin`, durée réglée par `settings.essai_mois`). Les comptes inscrits avant la v9 ont 2 mois à partir de leur date d'inscription.
+- Pendant l'essai : **rien n'est débité**, commandes et livraisons illimitées. Le badge « Essai gratuit » remplace le statut et le solde.
+- **3 jours avant la fin**, un bandeau prévient : date de fin + numéro de dépôt Wave pour recharger.
+- Après l'essai : le badge disparaît, statut et solde reviennent, et le paiement commence. Solde de départ **0** : sans recharge, le client arrive sur la page « Recharge ton compte pour continuer » (`/bloque`) et le chauffeur sur sa page bloquante (invisible des clients).
+- À l'annulation, seuls les points réellement débités sont rendus (`commandes.client_debite` / `chauffeur_debite`) : une commande passée pendant l'essai ne « rend » rien.
+
+## Points client — 1 FCFA = 1 point (après l'essai)
+
+- Chaque commande coûte **100 points**, déduits à la création (rendus si le client annule).
 - Sous 100 points, le tableau de bord redirige vers **`/bloque`** (recharge Wave via l'admin, onglet Recharges).
 
 ## Points chauffeur — 1 FCFA = 1 point, indépendant du statut PAYE/IMPAYE/BLOQUE
 
 Chaque chauffeur a un solde de points (`solde_points`), distinct du statut PAYE/IMPAYE/BLOQUE :
 
-- **2500 points offerts à l'inscription** (= 50 livraisons gratuites). Aucune action requise. Ensuite, le chauffeur paie (recharge Wave, via l'admin).
+- **2 mois d'essai gratuit** à l'inscription (voir plus haut), solde de départ 0. Ensuite, le chauffeur paie (recharge Wave, via l'admin).
 - **Chaque commande reçue** coûte **50 points**, déduits à sa création (1 citerne = 1000 L = la seule quantité de cette appli), rendus si le client annule.
-- **Sous 50 points**, `is_offline` passe à `true` : le chauffeur disparaît de `tricycles_dispo` (invisible des clients, quel que soit son statut) et ne peut plus se remettre actif ou en pause lui-même. Son tableau de bord (`/chauffeur`) affiche alors une page bloquante : « Solde épuisé — Rechargez par Wave au <numéro de dépôt> pour continuer. Minimum 1000F (1000 points) » + son solde actuel + bouton d'appel direct.
+- **Après l'essai, sous 50 points**, `is_offline` passe à `true` : le chauffeur disparaît de `tricycles_dispo` (invisible des clients, quel que soit son statut) et ne peut plus se remettre actif ou en pause lui-même. Son tableau de bord (`/chauffeur`) affiche alors une page bloquante : « Solde épuisé — Rechargez par Wave au <numéro de dépôt> pour continuer. Minimum 1000F (1000 points) » + son solde actuel + bouton d'appel direct.
 - **Fidélité** : chaque déduction incrémente `total_points_utilises` ; dès qu'il atteint **5000**, +50 points sont offerts automatiquement, le compteur repart à 0, et un toast « Bravo ! 1 livraison gratuite offerte (+50 pts) » s'affiche côté chauffeur.
 - **Recharge manuelle** : onglet **Recharges** de l'admin — liste des chauffeurs avec leur solde, champ pour ajouter des points (montant obligatoirement multiple de 50), débloque automatiquement le chauffeur si le solde repasse ≥ 50. Chaque recharge (et chaque déduction/bonus) est loguée dans `points_transactions` — aucune interface ne l'affiche pour l'instant, c'est une traçabilité interne.
 - Pas d'agrégateur de paiement : la recharge Wave est reçue manuellement par l'admin, qui l'enregistre lui-même dans l'appli.
+
+## Code PIN oublié
+
+Pas de SMS : le client ou le chauffeur clique « Code oublié ? » sur `/login`, qui lui dit d'appeler l'administrateur (numéro de dépôt). Après avoir vérifié son identité au téléphone, l'admin clique **Code provisoire** dans l'onglet Clients ou Chauffeurs : un code à 4 chiffres s'affiche une seule fois, à dicter. L'ancien code ne marche plus et la session en cours est coupée. À la connexion suivante, l'appli impose de choisir un nouveau code avant toute autre action.
+
+## Validation des chauffeurs (anti-intrusion)
+
+Un chauffeur inscrit par le lien de recrutement est **invisible des clients** et ne peut pas se mettre en service tant que l'admin ne l'a pas validé : il voit « Compte en attente de validation ». Le cockpit affiche une alerte tant qu'il reste des chauffeurs à valider ; l'onglet Chauffeurs les place en tête avec un bouton **Valider** (vérifier d'abord son identité, sa pièce, son tricycle). Pour un intrus : **Bloquer** ou supprimer. Si le lien de recrutement a fuité, change `DRIVER_SIGNUP_PATH` et redéploie : l'ancien lien donne 404.
 
 ## Super admin — le cockpit
 
 - **Dashboard** : nombre de clients, de chauffeurs, commandes du jour, CA estimé du jour, carte globale temps réel.
 - **Cités** / **Forages** : CRUD complet (ajout, renommage, suppression avec confirmation, cascade).
-- **Chauffeurs** : liste avec cité, prix, statut actif / en pause / hors ligne, statut PAYE/IMPAYE/BLOQUE, bouton « Commandes » pour voir son historique, suppression définitive.
+- **Chauffeurs** : liste avec cité, prix, fin d'essai, **Valider** / **Code provisoire**, statut actif / en pause / hors ligne, statut PAYE/IMPAYE/BLOQUE, bouton « Commandes » pour voir son historique, suppression définitive.
 - **Recharges** : liste des chauffeurs avec leur solde de points, recharge manuelle après paiement Wave.
-- **Clients** : liste avec cité/lot, statut, date de paiement, date d'expiration + jours restants, bouton **+30 jours**, mêmes actions.
+- **Clients** : liste avec cité/lot, fin d'essai, statut, date de paiement, **Code provisoire**, mêmes actions.
+- **Recherche par numéro ou nom** dans les onglets Clients, Chauffeurs et Recharges (n'importe quelle écriture : `07…`, `+225…`).
 - **Commandes** : flux temps réel de toutes les commandes, filtrable par statut.
 - **Sécurité** : changer le mot de passe admin.
 - **Paramètres** (`/<ADMIN_PATH>/parametres`) : numéro de dépôt Wave (`settings.depot_phone`, `0789855418` par défaut). C'est la **seule** source du numéro affiché (accueil, page « Solde insuffisant », espace chauffeur, affiché `07 89 85 54 18`) : aucun numéro n'est codé en dur dans le front.

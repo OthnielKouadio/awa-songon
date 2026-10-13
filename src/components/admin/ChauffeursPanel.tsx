@@ -8,17 +8,32 @@ import type { AdminData, CompteStatut, Creds } from "@/lib/types";
 import { useConfirm } from "../CustomModal";
 import { Icon } from "../icons";
 import { Badge, CommandeBadge, ErrorBox, SourceBadge, StatutBadge, Table, TableBtn, Td, Th } from "../ui";
-import { Panel, useMutation } from "./shared";
+import { EssaiCell } from "./ClientsPanel";
+import { correspond, Panel, RechercheCompte, useCodeProvisoire, useMutation } from "./shared";
 
 export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, error } = useMutation(reload);
   const { confirm, ConfirmDialog } = useConfirm();
   const [expanded, setExpanded] = useState<string | null>(null);
+  const pin = useCodeProvisoire(creds, reload);
+  const [recherche, setRecherche] = useState("");
+  // Chauffeurs à valider en premier : ils attendent une décision de l'admin.
+  const tricycles = data.tricycles.filter((t) => correspond(t, recherche)).sort((a, b) => Number(a.valide) - Number(b.valide));
+  const enAttente = data.tricycles.filter((t) => !t.valide).length;
   const citeNom = (id: string) => data.cites.find((c) => c.id === id)?.nom ?? "?";
   const sourceLabel = (id: string | null) => (id && data.sources.find((x) => x.id === id)?.nom) || "—";
 
   function setStatut(id: string, statut: CompteStatut) {
     void run(() => api.admin.setStatut(creds, "tricycles", id, statut));
+  }
+
+  async function valider(nom: string, id: string) {
+    const ok = await confirm("Il deviendra visible des clients de sa cité et pourra recevoir des commandes.", {
+      title: `Valider le compte de ${nom} ?`,
+      confirmLabel: "Valider",
+    });
+    if (!ok) return;
+    void run(() => api.admin.validerChauffeur(creds, id));
   }
 
   async function remove(nom: string, id: string) {
@@ -33,9 +48,16 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
 
   return (
     <Panel title="Chauffeurs">
-      {error && (
+      {enAttente > 0 && (
+        <p role="status" className="mb-4 flex items-center gap-2 rounded-xl border-brut border-ink bg-sky px-4 py-2.5 text-sm font-bold">
+          <Icon name="alert" size={16} className="text-azur" />
+          {enAttente} chauffeur{enAttente > 1 ? "s" : ""} en attente de validation : vérifie son identité (appel, pièce, tricycle) avant de valider.
+        </p>
+      )}
+      <RechercheCompte value={recherche} onChange={setRecherche} />
+      {(error || pin.error) && (
         <div className="mb-4">
-          <ErrorBox>{error}</ErrorBox>
+          <ErrorBox>{error || pin.error}</ErrorBox>
         </div>
       )}
       <Table>
@@ -47,12 +69,13 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
             <Th>Source</Th>
             <Th>Prix {QUANTITE_L}L</Th>
             <Th>Dispo</Th>
+            <Th>Essai</Th>
             <Th>Statut</Th>
             <Th>Actions</Th>
           </tr>
         </thead>
         <tbody>
-          {data.tricycles.map((t) => {
+          {tricycles.map((t) => {
             const commandes = data.commandes.filter((c) => c.tricycle_id === t.id);
             const enCours = commandes.filter((c) => COMMANDES_ACTIVES.includes(c.status)).length;
             return (
@@ -60,6 +83,11 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
                 <tr>
                   <Td>
                     <span className="font-bold">{t.nom}</span>
+                    {!t.valide && (
+                      <Badge tone="danger" className="ml-2">
+                        À valider
+                      </Badge>
+                    )}
                     {enCours > 0 && (
                       <Badge tone="ink" className="ml-2">
                         {enCours} en file
@@ -74,10 +102,18 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
                     <Badge tone={t.status === "ACTIVE" ? "azur" : "gray"}>{CHAUFFEUR_STATUS_LABEL[t.status]}</Badge>
                   </Td>
                   <Td>
+                    <EssaiCell fin={t.essai_fin} />
+                  </Td>
+                  <Td>
                     <StatutBadge statut={t.statut} />
                   </Td>
                   <Td>
                     <div className="flex flex-wrap gap-1.5">
+                      {!t.valide && (
+                        <TableBtn tone="azur" onClick={() => void valider(t.nom, t.id)}>
+                          Valider
+                        </TableBtn>
+                      )}
                       {t.statut !== "PAYE" && <TableBtn onClick={() => setStatut(t.id, "PAYE")}>Marquer payé</TableBtn>}
                       {t.statut !== "IMPAYE" && <TableBtn onClick={() => setStatut(t.id, "IMPAYE")}>Marquer impayé</TableBtn>}
                       {t.statut === "BLOQUE" ? (
@@ -89,6 +125,7 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
                           Bloquer
                         </TableBtn>
                       )}
+                      <TableBtn onClick={() => void pin.generer("tricycles", t.id, t.nom)}>Code provisoire</TableBtn>
                       <TableBtn onClick={() => setExpanded(expanded === t.id ? null : t.id)}>
                         <Icon name="eye" size={13} /> Commandes
                       </TableBtn>
@@ -100,7 +137,7 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
                 </tr>
                 {expanded === t.id && (
                   <tr>
-                    <td colSpan={8} className="border-b border-ink/10 bg-mist px-4 py-3">
+                    <td colSpan={9} className="border-b border-ink/10 bg-mist px-4 py-3">
                       <CommandesInline commandes={commandes} />
                     </td>
                   </tr>
@@ -111,7 +148,9 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
         </tbody>
       </Table>
       {data.tricycles.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun chauffeur inscrit.</p>}
+      {data.tricycles.length > 0 && tricycles.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun chauffeur ne correspond à « {recherche} ».</p>}
       {ConfirmDialog}
+      {pin.dialog}
     </Panel>
   );
 }

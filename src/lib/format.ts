@@ -162,26 +162,28 @@ export const RECHARGE_MIN_FCFA = 1000;
 export const POINTS_PAR_LIVRAISON = 50;
 /** Sous ce solde, le chauffeur passe is_offline (invisible des clients). */
 export const SOLDE_MIN = 50;
-/** Offerts automatiquement à l'inscription du chauffeur. */
-export const BONUS_INSCRIPTION = 2500;
 /** Total de points utilisés (cumulé) qui déclenche le bonus fidélité ci-dessous. */
 export const SEUIL_FIDELITE = 5000;
 /** Points offerts automatiquement dès que SEUIL_FIDELITE est atteint. */
 export const BONUS_FIDELITE_POINTS = 50;
-/** Livraisons gratuites obtenues avec le bonus d'inscription (2500 / 50 = 50). */
-export const LIVRAISONS_ESSAI = BONUS_INSCRIPTION / POINTS_PAR_LIVRAISON;
 /** Citernes livrées pour atteindre le seuil de fidélité (5000 / 50 = 100). */
 export const CITERNES_FIDELITE = SEUIL_FIDELITE / POINTS_PAR_LIVRAISON;
 
 // Client
-/** Offerts automatiquement à l'inscription du client (~12 commandes). */
-export const BONUS_INSCRIPTION_CLIENT = 1200;
 /** Coût d'une commande créée, déduit immédiatement du solde du client. */
 export const COUT_COMMANDE_CLIENT = 100;
 /** Sous ce solde, le client ne peut plus commander (redirection /bloque). */
 export const SOLDE_MIN_CLIENT = 100;
-/** Commandes gratuites obtenues avec le bonus d'inscription (1200 / 100 = 12). */
-export const COMMANDES_ESSAI_CLIENT = BONUS_INSCRIPTION_CLIENT / COUT_COMMANDE_CLIENT;
+
+// ─── Essai gratuit (par compte, points illimités) ───────────────────────────
+/** Durée annoncée sur la vitrine. La durée réellement appliquée aux nouveaux
+ *  comptes est settings.essai_mois en base : garder les deux identiques. */
+export const ESSAI_MOIS = 2;
+/** Le compte prévient l'utilisateur ce nombre de jours avant la fin de son essai. */
+export const ALERTE_FIN_ESSAI_JOURS = 3;
+export const enEssai = (fin: string | null | undefined) => !!fin && Date.now() < Date.parse(fin);
+/** Jours restants (arrondis au-dessus) avant la fin de l'essai. */
+export const joursRestants = (fin: string) => Math.max(0, Math.ceil((Date.parse(fin) - Date.now()) / 86400000));
 
 /** 1000 → "1 000 pts" */
 export function formatPoints(n: number) {

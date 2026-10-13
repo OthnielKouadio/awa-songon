@@ -7,15 +7,15 @@ import { Icon } from "@/components/icons";
 import { Btn, LinkBtn, Logo, Spinner } from "@/components/ui";
 import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
-import { formatPoints, RECHARGE_MIN_FCFA, formatFcfa } from "@/lib/format";
+import { enEssai, formatPoints, RECHARGE_MIN_FCFA, formatFcfa, SOLDE_MIN_CLIENT } from "@/lib/format";
 import { callLink, formatPhone } from "@/lib/phone";
 import { clearSession, readSession } from "@/lib/session";
 import type { Creds } from "@/lib/types";
 import { useDepotPhone } from "@/lib/useDepotPhone";
 
-/** Destination de redirection quand le solde de points du client tombe sous
- *  le minimum (vérifié dans le tableau de bord client, avant de rendre le
- *  contenu) — système 100% recharge, plus d'abonnement basé sur une date. */
+/** Destination de redirection quand l'essai gratuit du client est terminé et que
+ *  son solde de points est sous le minimum (vérifié dans le tableau de bord
+ *  client, avant de rendre le contenu). Jamais pendant l'essai. */
 export default function BloquePage() {
   const router = useRouter();
   const [creds, setCreds] = useState<Creds | null | undefined>(undefined);
@@ -55,7 +55,7 @@ function Bloque({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
   const load = useCallback(async () => {
     try {
       const p = await api.clientProfil(creds);
-      if (p.solde_points >= 100) {
+      if (enEssai(p.essai_fin) || p.solde_points >= SOLDE_MIN_CLIENT) {
         router.replace("/dashboard");
         return;
       }
@@ -91,7 +91,7 @@ function Bloque({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
             <span className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-danger/10 text-danger">
               <Icon name="lock" size={32} />
             </span>
-            <h1 className="title-lg mt-5">Solde insuffisant</h1>
+            <h1 className="title-lg mt-5">Recharge ton compte pour continuer</h1>
             <p className="mt-3 font-medium text-ink/70">
               Rechargez par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
             </p>

@@ -115,6 +115,7 @@ export const remote: Backend = {
     return rows[0] ?? null;
   },
   clientAnnulerCommande: (c, id) => rpc("client_annuler_commande", { ...auth(c), p_commande: id }),
+  clientChangerPin: (c, nouveau) => rpc("client_changer_pin", { ...auth(c), p_nouveau: nouveau }),
 
   // Position live : le serveur la diffuse avec ses coordonnées sur suivi:<id>
   // (aucun rechargement RPC nécessaire, contrairement aux pings "changed").
@@ -157,6 +158,7 @@ export const remote: Backend = {
     return { bonusFidelite: r.bonus_fidelite, soldePoints: r.solde_points };
   },
   chauffeurLivrer: (c, id) => rpc("chauffeur_livrer", { ...auth(c), p_commande: id }),
+  chauffeurChangerPin: (c, nouveau) => rpc("chauffeur_changer_pin", { ...auth(c), p_nouveau: nouveau }),
 
   admin: {
     load: (c) => rpc<AdminData>("admin_load", auth(c)),
@@ -183,6 +185,8 @@ export const remote: Backend = {
     rechargerPoints: (c, table, id, montant) => rpc("admin_recharger_points", { ...auth(c), p_table: table, p_id: id, p_montant: montant }),
     changerMotDePasse: (c, nouveau) => rpc("admin_change_password", { ...auth(c), p_nouveau: nouveau }),
     setDepotPhone: (c, tel) => rpc("admin_set_depot_phone", { ...auth(c), p_depot: tel }),
+    reinitialiserPin: (c, table, id) => rpc<string>("admin_reinitialiser_pin", { ...auth(c), p_table: table, p_id: id }),
+    validerChauffeur: (c, id) => rpc("admin_valider_chauffeur", { ...auth(c), p_id: id }),
     statsAnnuelles: (c, annee, citeId, tricycleId) =>
       rpc<YearlyStats>("get_yearly_stats", { ...auth(c), year_param: annee, p_cite: citeId, p_tricycle: tricycleId }),
 

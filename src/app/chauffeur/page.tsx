@@ -24,10 +24,12 @@ import {
   Spinner,
   StatutBadge,
 } from "@/components/ui";
+import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner } from "@/components/compte";
 import { usePrivateBase } from "@/components/PrivateBase";
 import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
 import {
+  enEssai,
   FILTRES_SOURCE,
   type FiltreSource,
   formatFcfa,
@@ -48,7 +50,6 @@ import { clearSession, readSession } from "@/lib/session";
 import { playNotification, unlockAudio } from "@/lib/sound";
 import type { ChauffeurCommande, ChauffeurProfile, Creds, TricycleStatus } from "@/lib/types";
 import { useDepotPhone } from "@/lib/useDepotPhone";
-import { useEssaiGratuit } from "@/lib/useEssaiGratuit";
 import { useGeoWatch } from "@/lib/useGeoWatch";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 
@@ -98,7 +99,6 @@ const partageActif = (c: ChauffeurCommande | undefined, now: number) =>
 
 function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
   const depot = useDepotPhone();
-  const essai = useEssaiGratuit();
   const [profile, setProfile] = useState<ChauffeurProfile | null>(null);
   const [file, setFile] = useState<ChauffeurCommande[]>([]);
   const [error, setError] = useState("");
@@ -232,20 +232,66 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   if (!profile) return error ? <div className="mt-10"><ErrorBox>{error}</ErrorBox></div> : <Spinner />;
 
+  const entete = (
+    <div className="mb-6 flex items-start justify-between gap-3">
+      <h1 className="title-lg">{profile.nom}</h1>
+      <button onClick={onLogout} className="rounded-xl border-brut border-ink bg-white px-3 py-2 text-sm font-bold transition-colors hover:bg-sky">
+        Quitter
+      </button>
+    </div>
+  );
+
+  // Code provisoire donné par l'admin (code oublié) : nouveau code obligatoire avant tout.
+  if (profile.pin_provisoire) {
+    return (
+      <div className="mt-10">
+        {entete}
+        <ChangerPinObligatoire
+          onSubmit={async (pin) => {
+            await api.chauffeurChangerPin(creds, pin);
+            await load();
+          }}
+        />
+      </div>
+    );
+  }
+
+  // Anti-intrusion : invisible des clients tant que l'admin n'a pas validé le compte.
+  if (!profile.valide) {
+    return (
+      <div className="mt-10">
+        {entete}
+        <div className="brut p-6 text-center">
+          <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-sky text-azur">
+            <Icon name="clock" size={28} />
+          </span>
+          <p className="title-md mt-4">Compte en attente de validation</p>
+          <p className="mt-2 font-medium text-ink/60">
+            Ton inscription est bien reçue. L&apos;administrateur va vérifier ton compte et t&apos;appeler. Tu seras visible des clients dès qu&apos;il
+            l&apos;aura validé.
+          </p>
+          {depot && (
+            <LinkBtn href={callLink(depot)} variant="ink" size="lg" className="mt-6 w-full">
+              <Icon name="phone" size={20} /> Appeler l&apos;administrateur
+            </LinkBtn>
+          )}
+          <Btn variant="white" className="mt-3 w-full" onClick={() => void load()}>
+            Vérifier à nouveau
+          </Btn>
+        </div>
+      </div>
+    );
+  }
+
   if (profile.is_offline) {
     return (
       <div className="mt-10">
-        <div className="mb-6 flex items-start justify-between gap-3">
-          <h1 className="title-lg">{profile.nom}</h1>
-          <button onClick={onLogout} className="rounded-xl border-brut border-ink bg-white px-3 py-2 text-sm font-bold transition-colors hover:bg-sky">
-            Quitter
-          </button>
-        </div>
+        {entete}
         <div className="brut p-6 text-center">
           <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-danger/10 text-danger">
             <Icon name="lock" size={28} />
           </span>
-          <p className="title-md mt-4">Solde épuisé</p>
+          <p className="title-md mt-4">Recharge ton compte pour continuer</p>
           <p className="mt-2 font-medium text-ink/60">
             Rechargez par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
           </p>
@@ -270,6 +316,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   return (
     <div className="mt-8 space-y-7">
+      <FinEssaiBanner fin={profile.essai_fin} depot={depot} />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <CiteBadge>
@@ -278,8 +325,9 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           </CiteBadge>
           <h1 className="title-lg mt-2">{profile.nom}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {essai === true && <Badge tone="sky">Essai gratuit</Badge>}
-            {essai === false && (
+            {enEssai(profile.essai_fin) ? (
+              <EssaiBadge fin={profile.essai_fin} />
+            ) : (
               <>
                 <StatutBadge statut={profile.statut} />
                 <Badge tone={profile.solde_points < SOLDE_MIN * 4 ? "danger" : "sky"}>{formatPoints(profile.solde_points)}</Badge>
