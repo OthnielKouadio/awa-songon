@@ -2,7 +2,7 @@
 
 import { AnimatePresence } from "framer-motion";
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { api } from "@/lib/data-provider";
 import type { AdminData, Cite, Creds } from "@/lib/types";
 import { useConfirm } from "../CustomModal";
 import { Btn, ErrorBox, Field } from "../ui";

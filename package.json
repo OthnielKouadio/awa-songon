@@ -7,16 +7,20 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/lib/phone.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
     "framer-motion": "^11.18.2",
     "leaflet": "1.9",
+    "lucide-react": "^1.55.0",
     "next": "^14.2.35",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-leaflet": "^4.2.1"
+    "react-leaflet": "^4.2.1",
+    "recharts": "^2.15.4",
+    "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
     "@types/leaflet": "1.9",

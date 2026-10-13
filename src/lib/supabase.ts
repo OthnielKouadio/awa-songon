@@ -21,7 +21,7 @@ export function getSupabase(): SupabaseClient | null {
 export function requireSupabase(): SupabaseClient {
   const sb = getSupabase();
   if (!sb) {
-    throw new Error("Client Supabase indisponible : variables NEXT_PUBLIC_SUPABASE_* absentes (mode démo actif).");
+    throw new Error("Client Supabase indisponible : variables NEXT_PUBLIC_SUPABASE_* absentes (et NEXT_PUBLIC_DEMO_MODE n'est pas activé).");
   }
   return sb;
 }

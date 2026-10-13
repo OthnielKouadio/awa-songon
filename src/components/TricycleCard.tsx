@@ -1,10 +1,17 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { estimerMinutes, formatFcfa, formatMinutes, QUANTITE_L } from "@/lib/format";
+import { estimerMinutes, formatFcfa, formatMinutes, formatProgrammee, prochain8h, QUANTITE_L } from "@/lib/format";
 import type { TricycleDispo } from "@/lib/types";
 import { Icon } from "./icons";
 import { Badge, Btn, Counter, PulseDot } from "./ui";
+
+/** Quand le client sera livré s'il commande maintenant (le chauffeur ne refuse jamais). */
+export function delaiLivraison(t: TricycleDispo): string | null {
+  if (t.status === "PAUSED") return "Aujourd'hui";
+  if (t.status === "OFFLINE") return formatProgrammee(prochain8h().toISOString()).replace(/^./, (c) => c.toUpperCase());
+  return null;
+}
 
 export default function TricycleCard({
   t,
@@ -17,6 +24,7 @@ export default function TricycleCard({
 }) {
   const minutes = estimerMinutes(t.file_count + 1);
   const enRoute = t.etat === "EN_ROUTE";
+  const delai = delaiLivraison(t);
 
   return (
     <motion.li
@@ -33,12 +41,19 @@ export default function TricycleCard({
             <Icon name="truck" size={26} className="text-azur" />
             {t.nom}
           </h3>
-          <p className="mt-1 font-medium text-ink/60">Source : {t.source_nom}</p>
+          {t.source_nom && <p className="mt-1 font-medium text-ink/60">Source : {t.source_nom}</p>}
         </div>
-        <Badge tone={enRoute ? "azur" : "sky"}>
-          <PulseDot color={enRoute ? "#FFFFFF" : "#0096FF"} pulse={enRoute} />
-          {enRoute ? "En route" : "À la source"}
-        </Badge>
+        {t.status === "ACTIVE" ? (
+          <Badge tone={enRoute ? "azur" : "sky"}>
+            <PulseDot color={enRoute ? "#FFFFFF" : "#0096FF"} pulse={enRoute} />
+            {enRoute ? "En route" : "À la source"}
+          </Badge>
+        ) : (
+          <Badge tone="gray">
+            <Icon name={t.status === "PAUSED" ? "pause" : "power"} size={12} />
+            {t.status === "PAUSED" ? "En pause" : "Hors ligne"}
+          </Badge>
+        )}
       </div>
 
       {/* Une commande = un voyage = 1000 L, au prix fixé par le chauffeur */}
@@ -55,11 +70,11 @@ export default function TricycleCard({
           <p className="mt-1.5 text-sm font-semibold text-ink/70">en attente</p>
         </div>
         <div className="rounded-2xl border-brut border-ink bg-white p-3.5">
-          <p className="font-display text-4xl font-bold leading-none text-azur">
-            <Counter value={minutes} format={formatMinutes} />
+          <p className={`font-display font-bold leading-none text-azur ${delai ? "text-2xl" : "text-4xl"}`}>
+            {delai ?? <Counter value={minutes} format={formatMinutes} />}
           </p>
           <p className="mt-1.5 flex items-center gap-1 text-sm font-semibold text-ink/70">
-            <Icon name="clock" size={14} /> temps estimé
+            <Icon name="clock" size={14} /> {delai ? "livraison prévue" : "temps estimé"}
           </p>
         </div>
       </div>

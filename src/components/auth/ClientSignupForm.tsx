@@ -4,18 +4,19 @@ import { useEffect, useState } from "react";
 import GeoPrompt from "@/components/GeoPrompt";
 import { Icon } from "@/components/icons";
 import { CustomSelect } from "@/components/CustomSelect";
-import { Btn, ErrorBox, Field, PinInput } from "@/components/ui";
-import { api } from "@/lib/api";
+import { Btn, ErrorBox, Field, PhoneInput, PinInput } from "@/components/ui";
+import { api } from "@/lib/data-provider";
 import { errorMessage } from "@/lib/errors";
-import { byNom, normalizePhone } from "@/lib/format";
-import { saveSession } from "@/lib/session";
-import type { Cite, Role } from "@/lib/types";
+import { byNom, onlyDigits } from "@/lib/format";
+import { phoneCI } from "@/lib/phone";
+import { CompteCree, erreurTelephone } from "./inscription";
+import type { Cite, Creds } from "@/lib/types";
 import { useGeo } from "@/lib/useGeo";
 
-/** Formulaire d'inscription client — utilisé sur /login (onglet Inscription)
- *  et sur /inscription?role=client. Cité choisie via CustomSelect uniquement
+/** Formulaire d'inscription client — utilisé sur /inscription. Cité choisie via
+ *  CustomSelect uniquement
  *  (jamais un <select> natif). */
-export default function ClientSignupForm({ onSession }: { onSession: (role: Role) => void }) {
+export default function ClientSignupForm({ onSession }: { onSession: (creds: Creds) => Promise<void> }) {
   const [nom, setNom] = useState("");
   const [tel, setTel] = useState("");
   const [citeId, setCiteId] = useState("");
@@ -25,6 +26,7 @@ export default function ClientSignupForm({ onSession }: { onSession: (role: Role
   const [cites, setCites] = useState<Cite[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [cree, setCree] = useState<string | null>(null); // compte créé, connexion auto échouée
   const geo = useGeo();
 
   useEffect(() => {
@@ -37,27 +39,41 @@ export default function ClientSignupForm({ onSession }: { onSession: (role: Role
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    if (!nom.trim()) return setError("Entre ton nom.");
+    const errTel = erreurTelephone(tel);
+    const telCI = phoneCI(tel);
+    if (errTel || !telCI) return setError(errTel ?? "Numéro de téléphone invalide.");
     if (pin.length !== 4) return setError("Ton code doit faire 4 chiffres.");
     if (pin !== pin2) return setError("Les deux codes ne sont pas identiques.");
     if (!citeId) return setError("Choisis ta cité.");
     if (!lot.trim()) return setError("Entre ton numéro de lot.");
     setBusy(true);
+    // 1) Création du compte : ses erreurs (numéro déjà inscrit, cité…) s'affichent telles quelles.
+    let s;
     try {
-      const s = await api.inscrireClient({
+      s = await api.inscrireClient({
         nom,
-        tel: normalizePhone(tel),
+        tel: telCI,
         citeId,
         lot,
         pin,
         gps: geo.coords ? { lat: geo.coords.lat, long: geo.coords.lng } : null,
       });
-      saveSession(s.creds);
-      onSession("client");
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);
+      return;
+    }
+    // 2) Connexion automatique : le compte existe déjà, un échec ici n'est pas un échec d'inscription.
+    try {
+      await onSession(s.creds);
+    } catch (err) {
+      setCree(errorMessage(err));
+      setBusy(false);
     }
   }
+
+  if (cree) return <CompteCree raison={cree} />;
 
   return (
     <>
@@ -67,7 +83,7 @@ export default function ClientSignupForm({ onSession }: { onSession: (role: Role
         </Field>
 
         <Field label="Ton numéro de téléphone">
-          <input className="field" type="tel" inputMode="tel" autoComplete="tel" placeholder="07 00 00 00 00" value={tel} onChange={(e) => setTel(e.target.value)} required />
+          <PhoneInput value={tel} onChange={setTel} />
         </Field>
 
         <Field label="Ta cité">
@@ -81,7 +97,7 @@ export default function ClientSignupForm({ onSession }: { onSession: (role: Role
         </Field>
 
         <Field label="Ton numéro de lot">
-          <input className="field" placeholder="Ex : 45" maxLength={20} value={lot} onChange={(e) => setLot(e.target.value)} required />
+          <input className="field" inputMode="numeric" pattern="[0-9]*" placeholder="Ex : 45" value={lot} onChange={(e) => setLot(onlyDigits(e.target.value, 10))} required />
         </Field>
 
         <Field label="Crée ton code PIN (4 chiffres)" hint="Retiens-le : c'est lui qui protège ton compte.">

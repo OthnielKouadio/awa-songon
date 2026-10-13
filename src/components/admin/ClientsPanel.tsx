@@ -1,6 +1,6 @@
 "use client";
 
-import { api } from "@/lib/api";
+import { api } from "@/lib/data-provider";
 import { jour } from "@/lib/format";
 import type { AdminData, CompteStatut, Creds } from "@/lib/types";
 import { useConfirm } from "../CustomModal";
@@ -52,6 +52,11 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
               <tr key={c.id}>
                 <Td>
                   <span className="font-bold">{c.nom}</span>
+                  {c.is_temporary && (
+                    <span className="ml-2 rounded-md border border-ink/25 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-ink/60">
+                      Temporaire
+                    </span>
+                  )}
                   {nb > 0 && (
                     <Badge tone="ink" className="ml-2">
                       {nb} commande{nb > 1 ? "s" : ""}

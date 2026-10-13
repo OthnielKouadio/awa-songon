@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import OrderTracker from "@/components/OrderTracker";
 import { Btn, ErrorBox, Logo, Spinner } from "@/components/ui";
-import { api } from "@/lib/api";
+import { api } from "@/lib/data-provider";
 import { errorMessage } from "@/lib/errors";
 import type { Suivi } from "@/lib/types";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
@@ -37,6 +37,8 @@ export default function SuiviPage() {
     void load();
   }, [load]);
 
+  // Le statut de la commande change via les pings tricycle:<id> (toute écriture
+  // sur ses commandes) ; la position live arrive à part, dans OrderTracker.
   useLiveRefresh([suivi ? `tricycle:${suivi.tricycle_id}` : null], load, 10000);
 
   return (

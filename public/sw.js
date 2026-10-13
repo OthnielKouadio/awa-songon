@@ -3,13 +3,29 @@
 // Aucune donnée métier (commandes, prix, sessions, appels Supabase) n'est
 // jamais mise en cache — tout ça reste toujours en direct du réseau, pour
 // ne jamais montrer un statut de commande périmé.
-const CACHE = "awa-static-v1";
+const CACHE = "awa-static-v2"; // changer la version purge les anciens caches à l'activation
+
+// En local (next dev), les fichiers /_next/static gardent le même nom d'une
+// version à l'autre : les mettre en cache ferait tourner du code périmé. Ici le
+// service worker vide tout, se désinscrit et recharge les onglets ouverts.
+const LOCAL = ["localhost", "127.0.0.1", "[::1]"].includes(self.location.hostname);
 
 self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
+  if (LOCAL) {
+    event.waitUntil(
+      caches
+        .keys()
+        .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+        .then(() => self.registration.unregister())
+        .then(() => self.clients.matchAll({ type: "window" }))
+        .then((tabs) => tabs.forEach((t) => t.navigate(t.url)))
+    );
+    return;
+  }
   event.waitUntil(
     caches
       .keys()
@@ -24,7 +40,7 @@ function isStaticAsset(url) {
 }
 
 self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET") return; // écritures (commandes, statuts…) : jamais interceptées
+  if (LOCAL || event.request.method !== "GET") return; // local : jamais de cache · écritures : jamais interceptées
 
   const url = new URL(event.request.url);
   if (!isStaticAsset(url)) return; // tout le reste (pages, API Supabase) : réseau direct, sans passer par le SW

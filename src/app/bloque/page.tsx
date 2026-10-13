@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
 import { Btn, LinkBtn, Logo, Spinner } from "@/components/ui";
-import { api } from "@/lib/api";
+import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
-import { callLink, formatPoints, NUMERO_RECHARGE, RECHARGE_MIN_FCFA, formatFcfa } from "@/lib/format";
+import { formatPoints, RECHARGE_MIN_FCFA, formatFcfa } from "@/lib/format";
+import { callLink, formatPhone } from "@/lib/phone";
 import { clearSession, readSession } from "@/lib/session";
 import type { Creds } from "@/lib/types";
+import { useDepotPhone } from "@/lib/useDepotPhone";
 
 /** Destination de redirection quand le solde de points du client tombe sous
  *  le minimum (vérifié dans le tableau de bord client, avant de rendre le
@@ -46,6 +48,7 @@ export default function BloquePage() {
 
 function Bloque({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
   const router = useRouter();
+  const depot = useDepotPhone();
   const [solde, setSolde] = useState<number | null>(null);
   const [error, setError] = useState("");
 
@@ -90,15 +93,17 @@ function Bloque({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
             </span>
             <h1 className="title-lg mt-5">Solde insuffisant</h1>
             <p className="mt-3 font-medium text-ink/70">
-              Rechargez par Wave au <strong>{NUMERO_RECHARGE}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
+              Rechargez par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
             </p>
             <div className="mt-5 inline-flex items-center gap-2 rounded-full border-[1.5px] border-danger bg-danger/10 px-4 py-2 font-bold text-danger">
               Solde actuel : {formatPoints(solde)}
             </div>
 
-            <LinkBtn href={callLink(NUMERO_RECHARGE)} variant="ink" size="lg" className="mt-6 w-full">
-              <Icon name="phone" size={20} /> Appeler pour recharger
-            </LinkBtn>
+            {depot && (
+              <LinkBtn href={callLink(depot)} variant="ink" size="lg" className="mt-6 w-full">
+                <Icon name="phone" size={20} /> Appeler pour recharger
+              </LinkBtn>
+            )}
             <Btn variant="white" className="mt-3 w-full" onClick={() => void load()}>
               Réessayer
             </Btn>

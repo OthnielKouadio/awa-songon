@@ -19,9 +19,16 @@ export default function PwaInstall() {
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {
-        // pas grave : l'app reste utilisable sans service worker, juste sans mise en cache
-      });
+      if (process.env.NODE_ENV === "production") {
+        navigator.serviceWorker.register("/sw.js").catch(() => {
+          // pas grave : l'app reste utilisable sans service worker, juste sans mise en cache
+        });
+      } else {
+        // En dev, les fichiers /_next/static ne changent pas de nom d'une version à
+        // l'autre : un service worker servirait l'ANCIEN code depuis son cache.
+        void navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => void r.unregister()));
+        if ("caches" in window) void caches.keys().then((keys) => keys.forEach((k) => void caches.delete(k)));
+      }
     }
     try {
       setDismissed(sessionStorage.getItem(DISMISSED_KEY) === "1");

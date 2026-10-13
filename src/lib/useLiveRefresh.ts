@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { MOCK_EVENT } from "./mock";
-import { getSupabase, isSupabaseConfigured } from "./supabase";
+import { api } from "./data-provider";
 
 /**
  * Rafraîchit des données en direct.
@@ -26,18 +25,7 @@ export function useLiveRefresh(
       timer = setTimeout(() => cb.current(), 250); // regroupe les rafales
     };
 
-    const sb = isSupabaseConfigured ? getSupabase() : null;
-    const channels = sb
-      ? key
-          .split("|")
-          .filter(Boolean)
-          .map((name) => sb.channel(name).on("broadcast", { event: "changed" }, ping).subscribe())
-      : [];
-
-    if (!sb) {
-      window.addEventListener(MOCK_EVENT, ping);
-      window.addEventListener("storage", ping);
-    }
+    const unsubscribe = api.subscribeTopics(key.split("|").filter(Boolean), ping);
 
     const poll = setInterval(() => {
       if (document.visibilityState === "visible") cb.current();
@@ -51,9 +39,7 @@ export function useLiveRefresh(
       if (timer) clearTimeout(timer);
       clearInterval(poll);
       document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener(MOCK_EVENT, ping);
-      window.removeEventListener("storage", ping);
-      channels.forEach((c) => void sb?.removeChannel(c));
+      unsubscribe();
     };
   }, [key, pollMs]);
 }

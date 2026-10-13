@@ -1,6 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import ChauffeursPanel from "@/components/admin/ChauffeursPanel";
@@ -12,9 +13,10 @@ import RechargesPanel from "@/components/admin/RechargesPanel";
 import SecuritePanel from "@/components/admin/SecuritePanel";
 import SourcesPanel from "@/components/admin/SourcesPanel";
 import { Badge, ErrorBox, Logo, PulseDot, Spinner } from "@/components/ui";
-import { api } from "@/lib/api";
+import { usePrivateBase } from "@/components/PrivateBase";
+import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
-import { byNom } from "@/lib/format";
+import { byNom, dateLongue, jourAbidjan } from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
 import type { AdminData, Creds } from "@/lib/types";
 
@@ -32,6 +34,7 @@ type Tab = (typeof TABS)[number]["id"];
 
 export default function AdminPage() {
   const router = useRouter();
+  const base = usePrivateBase();
   const [creds, setCreds] = useState<Creds | null | undefined>(undefined);
 
   useEffect(() => {
@@ -60,7 +63,7 @@ export default function AdminPage() {
   return (
     <main className="mx-auto max-w-6xl px-4 pb-24 pt-5 sm:px-6">
       <header className="flex items-center justify-between gap-3">
-        <Logo href="/admin" />
+        <Logo href={base} />
         <div className="flex items-center gap-3">
           <Badge tone="ink">Super admin</Badge>
           <button onClick={logout} className="text-sm font-semibold text-ink/60 underline-offset-4 hover:text-azur hover:underline">
@@ -75,6 +78,7 @@ export default function AdminPage() {
 
 function Console({ creds }: { creds: Creds }) {
   const router = useRouter();
+  const base = usePrivateBase();
   const [tab, setTab] = useState<Tab>("dashboard");
   const [data, setData] = useState<AdminData | null>(null);
   const [error, setError] = useState("");
@@ -89,6 +93,7 @@ function Console({ creds }: { creds: Creds }) {
         tricycles: [...d.tricycles].sort((a, b) => a.nom.localeCompare(b.nom)),
         clients: [...d.clients].sort((a, b) => a.nom.localeCompare(b.nom)),
         commandes: d.commandes,
+        settings: d.settings,
       });
       setError("");
     } catch (e) {
@@ -119,8 +124,16 @@ function Console({ creds }: { creds: Creds }) {
     };
   }, [load]);
 
+  const enEssai = data ? jourAbidjan() <= data.settings.trial_ends_at : false;
+
   return (
-    <div className="mt-10 space-y-6">
+    <div className="mt-6 space-y-6">
+      {data && enEssai && (
+        <div role="status" className="flex items-center gap-2 rounded-xl border border-ink/15 bg-mist px-4 py-2.5 text-sm font-medium text-ink/70">
+          <span className="h-1.5 w-1.5 rounded-full bg-azur" aria-hidden />
+          Période d&apos;essai jusqu&apos;au {dateLongue(data.settings.trial_ends_at)}
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <nav className="flex flex-wrap gap-2" aria-label="Sections">
           {TABS.map((t) => (
@@ -134,6 +147,12 @@ function Console({ creds }: { creds: Creds }) {
               {t.label}
             </motion.button>
           ))}
+          <Link href={`${base}/statistiques`} className="rounded-2xl border-brut border-ink bg-white px-4 py-2 font-bold transition-colors hover:bg-sky">
+            Statistiques
+          </Link>
+          <Link href={`${base}/parametres`} className="rounded-2xl border-brut border-ink bg-white px-4 py-2 font-bold transition-colors hover:bg-sky">
+            Paramètres
+          </Link>
         </nav>
         <span className="flex items-center gap-2 text-sm font-bold text-azur">
           <PulseDot color={live ? "#0096FF" : "#C9D5E3"} pulse={live} />

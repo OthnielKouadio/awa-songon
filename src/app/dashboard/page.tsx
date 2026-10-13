@@ -8,12 +8,14 @@ import { Icon } from "@/components/icons";
 import OrderModal from "@/components/OrderModal";
 import OrderTracker from "@/components/OrderTracker";
 import TricycleCard from "@/components/TricycleCard";
-import { Badge, Btn, ErrorBox, Logo, Spinner, StatutBadge, Toggle } from "@/components/ui";
-import { api } from "@/lib/api";
+import { useConfirm } from "@/components/CustomModal";
+import { Badge, Btn, CiteBadge, ErrorBox, Logo, Spinner, StatutBadge, Toggle } from "@/components/ui";
+import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
 import { formatPoints, SOLDE_MIN_CLIENT } from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
 import type { ClientProfile, Creds, Suivi, TricycleDispo } from "@/lib/types";
+import { useEssaiGratuit } from "@/lib/useEssaiGratuit";
 import { useGeo } from "@/lib/useGeo";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 
@@ -62,6 +64,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const [error, setError] = useState("");
   const [chosen, setChosen] = useState<TricycleDispo | null>(null);
   const geo = useGeo();
+  const { confirm, ConfirmDialog } = useConfirm();
 
   const load = useCallback(async () => {
     try {
@@ -86,7 +89,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
       } else if (lastId) {
         // vient peut-être d'être livrée : on l'affiche une dernière fois avant de l'oublier
         const finished = await api.fetchSuivi(lastId);
-        if (finished && finished.status === "LIVRE") a = finished;
+        if (finished && finished.status === "LIVREE") a = finished;
         else {
           try {
             localStorage.removeItem(lastKey(creds.tel));
@@ -107,16 +110,14 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
     void load();
   }, [load]);
 
-  useLiveRefresh(
-    [profile ? `client:${profile.id}` : null, profile ? `cite:${profile.cite_id}` : null, active ? `tricycle:${active.tricycle_id}` : null],
-    load,
-    10000
-  );
+  // client:<id> suffit pour suivre sa commande (chaque changement de commande le
+  // ping) ; la position live arrive à part, directement dans OrderTracker.
+  useLiveRefresh([profile ? `client:${profile.id}` : null, profile ? `cite:${profile.cite_id}` : null], load, 10000);
 
   if (!profile) return error ? <Wrap onLogout={onLogout}><ErrorBox>{error}</ErrorBox></Wrap> : <Wrap onLogout={onLogout}><Spinner /></Wrap>;
 
   const bloque = profile.statut === "BLOQUE";
-  const livree = active?.status === "LIVRE";
+  const livree = active?.status === "LIVREE";
 
   function nouvelleCommande() {
     try {
@@ -124,6 +125,27 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
     } catch {}
     setActive(null);
     void load();
+  }
+
+  async function annuler() {
+    if (!active) return;
+    const ok = await confirm("Tes 100 points te seront rendus.", {
+      title: "Annuler ta commande ?",
+      danger: true,
+      confirmLabel: "Oui, annuler",
+      cancelLabel: "Non",
+    });
+    if (!ok) return;
+    try {
+      await api.clientAnnulerCommande(creds, active.id);
+      try {
+        localStorage.removeItem(lastKey(creds.tel));
+      } catch {}
+      setActive(null);
+      await load();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
 
   return (
@@ -136,12 +158,13 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
       {active ? (
         <div className="space-y-5">
-          <OrderTracker s={active} start={active.position_file} />
+          <OrderTracker s={active} start={active.position_file} onCancel={annuler} />
           {livree && (
             <Btn variant="ink" size="lg" className="w-full" onClick={nouvelleCommande}>
               Commander à nouveau
             </Btn>
           )}
+          {ConfirmDialog}
         </div>
       ) : bloque ? (
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="brut p-6">
@@ -173,14 +196,14 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           </section>
 
           <section>
-            <h2 className="title-md mb-5">Tricycles disponibles · {profile.cite_nom}</h2>
+            <h2 className="title-md mb-5">Tricycles de {profile.cite_nom}</h2>
             {tricycles === null ? (
               <Spinner label="Recherche des tricycles" />
             ) : tricycles.length === 0 ? (
               <div className="brut p-6">
-                <p className="title-md">Aucun tricycle dispo</p>
+                <p className="title-md">Aucun tricycle disponible</p>
                 <p className="mt-2 font-medium text-ink/60">
-                  Les chauffeurs de {profile.cite_nom} sont en pause. Cette page se met à jour toute seule dès qu&apos;un tricycle repasse DISPO.
+                  Aucun chauffeur ne livre {profile.cite_nom} pour l&apos;instant. Cette page se met à jour toute seule dès qu&apos;un tricycle arrive.
                 </p>
               </div>
             ) : (
@@ -229,6 +252,7 @@ function Wrap({
   profile?: ClientProfile;
   children: React.ReactNode;
 }) {
+  const essai = useEssaiGratuit();
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-5 sm:px-6">
       <header className="flex items-center justify-between gap-3">
@@ -240,11 +264,16 @@ function Wrap({
 
       {profile && (
         <div className="mt-6 flex flex-wrap items-center gap-2">
-          <Badge tone="sky">
-            {profile.cite_nom} · Lot {profile.lot_numero}
-          </Badge>
-          <StatutBadge statut={profile.statut} />
-          <PointsBadge soldePoints={profile.solde_points} />
+          <CiteBadge>
+            Tu commandes à {profile.cite_nom} · Lot {profile.lot_numero}
+          </CiteBadge>
+          {essai === true && <Badge tone="sky">Essai gratuit</Badge>}
+          {essai === false && (
+            <>
+              <StatutBadge statut={profile.statut} />
+              <PointsBadge soldePoints={profile.solde_points} />
+            </>
+          )}
         </div>
       )}
 

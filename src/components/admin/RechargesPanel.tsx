@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { api } from "@/lib/data-provider";
 import { formatPoints, onlyDigits, RECHARGE_MULTIPLE, SOLDE_MIN, SOLDE_MIN_CLIENT } from "@/lib/format";
 import type { AdminData, Creds } from "@/lib/types";
 import { Badge, ErrorBox, Table, TableBtn, Td, Th } from "../ui";

@@ -1,14 +1,29 @@
 /**
- * MODE DÉMO — backend 100 % navigateur (localStorage), utilisé tant que les
- * variables NEXT_PUBLIC_SUPABASE_* sont absentes. Reproduit la logique des
+ * MODE DÉMO — backend 100 % navigateur (localStorage), utilisé UNIQUEMENT si
+ * NEXT_PUBLIC_DEMO_MODE=true (voir data-provider.ts : jamais inclus dans un build
+ * de production sinon). Implémente le même contrat Backend que remote.ts et reproduit la logique des
  * fonctions SQL de supabase/schema.sql : auth unifiée (client/chauffeur/admin),
- * file d'attente, prix par chauffeur, statuts PAYE/IMPAYE/BLOQUE, etc.
+ * file d'attente, statuts ACTIVE/PAUSED/OFFLINE, verrouillage par cité, etc.
  *
  * Temps réel : chaque écriture émet l'évènement "awa:mock" (même onglet) et
  * déclenche l'évènement natif "storage" dans les AUTRES onglets.
+ * Les tâches cron (23h59 / 8h00 / purge GPS) sont rejouées à chaque lecture.
  */
-import { AppError, fail } from "./errors";
-import { normalizePhone, PRIX_MAX, PRIX_MIN } from "./format";
+import { AppError, fail, shortId, tropDeCommandes } from "./errors";
+import {
+  COMMANDES_ACTIVES,
+  COMMANDES_ANNULABLES,
+  DISTANCE_MAX_M,
+  distanceMetres,
+  HEURE_LIMITE_ANNULATION,
+  jourAbidjan,
+  PARTAGE_GPS_MAX_MS,
+  POSITION_MAX_AGE_MS,
+  PRIX_MAX,
+  PRIX_MIN,
+  prochain8h,
+} from "./format";
+import { normalizePhone, phoneCI } from "./phone";
 import type {
   AdminData,
   AdminTable,
@@ -19,34 +34,48 @@ import type {
   Client,
   ClientProfile,
   Commande,
+  CommandeStatus,
   CompteStatut,
   Creds,
   InscriptionChauffeur,
   InscriptionClient,
   LoginResult,
   NouvelleCommande,
+  Settings,
   Source,
   Suivi,
   Tricycle,
+  TricycleStatus,
+  YearlyStats,
 } from "./types";
 
 export const MOCK_EVENT = "awa:mock";
-const KEY = "awa:mock:v4"; // v4 : comptes clients + admin caché + statuts PAYE/IMPAYE/BLOQUE
-const ACTIVE = ["EN_ATTENTE", "EN_COURS"];
-const DEFAULT_ADMIN_TEL = "0566036825";
-const DEFAULT_ADMIN_PASSWORD = "admin123";
+const KEY = "awa:mock:v9"; // v9 : admin identifié par email
+const DEFAULT_DEPOT_PHONE = "0789855418";
+// Aucun identifiant admin en dur : la démo lit les siens dans l'environnement
+// (local uniquement). Sans mot de passe défini, le compte admin démo est
+// verrouillé par un secret aléatoire.
+const DEMO_ADMIN_EMAIL = (process.env.NEXT_PUBLIC_DEMO_ADMIN_EMAIL ?? "").trim().toLowerCase();
+const DEMO_ADMIN_PASSWORD = process.env.NEXT_PUBLIC_DEMO_ADMIN_PASSWORD ?? "";
 
 type Auth = { pin: string; token: string | null; essais: number; bloque: number | null };
 type MockTricycle = Tricycle & Auth;
 type MockClient = Client & Auth;
-type MockAdmin = { telephone: string; password: string; token: string | null; essais: number; bloque: number | null };
+type MockAdmin = { email: string; password: string; token: string | null; essais: number; bloque: number | null };
+/** jour_file : jour (UTC) où la commande est entrée en QUEUED — sert au rollover de 23h59. */
+type MockCommande = Commande & { jour_file?: string };
+/** Équivalent de positions_live : une position par tricycle, TTL 5 min. */
+type MockPosition = { commande_id: string; lat: number; long: number; maj: string };
 
 type DB = {
   cites: Cite[];
   sources: Source[];
   tricycles: MockTricycle[];
   clients: MockClient[];
-  commandes: Commande[];
+  commandes: MockCommande[];
+  positions: Record<string, MockPosition>;
+  journal: { action: string; acteur_id: string | null; details: Record<string, unknown>; created_at: string }[];
+  settings: Settings;
   admin: MockAdmin;
 };
 
@@ -61,7 +90,11 @@ function uid(): string {
 }
 const token = () => uid().replace(/-/g, "") + uid().replace(/-/g, "");
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60000).toISOString();
+const today = () => jourAbidjan();
+/** "AAAA-MM-JJ" + h heures, heure d'Abidjan (UTC+0). */
+const aHeure = (jour: string, h: number) => new Date(`${jour}T${String(h).padStart(2, "0")}:00:00Z`).toISOString();
 const prixValide = (p: unknown): p is number => typeof p === "number" && Number.isFinite(p) && p >= PRIX_MIN && p <= PRIX_MAX;
+const isActive = (s: CommandeStatus) => COMMANDES_ACTIVES.includes(s);
 
 function seed(): DB {
   const c1 = uid(),
@@ -73,6 +106,7 @@ function seed(): DB {
     s4 = uid();
   const kaderId = uid(),
     yaoId = uid(),
+    seydouId = uid(),
     moussaId = uid(),
     koffiId = uid();
   const fatouId = uid(),
@@ -83,11 +117,11 @@ function seed(): DB {
     id: string,
     nom: string,
     telephone: string,
+    cite_id: string,
     source_id: string | null,
-    status: "DISPO" | "OFF",
+    status: TricycleStatus,
     etat: "A_LA_SOURCE" | "EN_ROUTE",
     prix_1000: number,
-    cite_ids: string[],
     statut: CompteStatut = "PAYE",
     solde_points = 2500,
     is_offline = false
@@ -95,18 +129,15 @@ function seed(): DB {
     id,
     nom,
     telephone,
+    cite_id,
     source_id,
     status,
     etat,
     prix_1000,
     statut,
-    cite_ids,
     solde_points,
     total_points_utilises: 0,
     is_offline,
-    lat: null,
-    long: null,
-    position_maj: null,
     pin: "1234",
     token: null,
     essais: 0,
@@ -133,6 +164,7 @@ function seed(): DB {
     statut,
     date_paiement: statut === "PAYE" ? minutesAgo(60 * 24 * 3) : null,
     solde_points,
+    is_temporary: false,
     pin: "1234",
     token: null,
     essais: 0,
@@ -145,11 +177,11 @@ function seed(): DB {
     lot: string,
     prix: number,
     pos: number,
-    status: Commande["status"],
+    status: CommandeStatus,
     lat: number | null,
     long: number | null,
     ago: number
-  ): Commande => ({
+  ): MockCommande => ({
     id: uid(),
     client_id,
     tricycle_id,
@@ -160,8 +192,32 @@ function seed(): DB {
     status,
     lat,
     long,
+    programmee_pour: null,
+    arriving_at: null,
+    scheduled_for: today(),
+    annulable_jusqua: null,
+    source: "app",
+    added_by_driver_id: null,
+    is_temporary_client: false,
+    quantite_bidons: null,
+    note: null,
+    livree_at: null,
     created_at: minutesAgo(ago),
   });
+  const mariamId = uid();
+  const mariam: MockClient = {
+    ...cli(mariamId, "Mariam Traoré", "0544332211", c1, "4", null, null, "IMPAYE", 0),
+    is_temporary: true,
+    pin: `!${token()}`,
+  };
+  const manuelle: MockCommande = {
+    ...cmd(mariamId, kaderId, c1, "4", 2500, 3, "ASSIGNED", null, null, 5),
+    source: "manual",
+    added_by_driver_id: kaderId,
+    is_temporary_client: true,
+    quantite_bidons: 4,
+    note: "Appeler en arrivant",
+  };
 
   return {
     cites: [
@@ -176,35 +232,230 @@ function seed(): DB {
       { id: s4, nom: "Forage Sud", cite_id: c3, lat: 5.3745, long: -4.2698 },
     ],
     tricycles: [
-      // Kader livre 2 cités à la fois : démo du multi-cité.
-      tri(kaderId, "Kader", "0700000001", s1, "DISPO", "A_LA_SOURCE", 2500, [c1, c2]),
-      tri(yaoId, "Yao", "0700000002", s2, "DISPO", "EN_ROUTE", 2500, [c1]),
-      tri(moussaId, "Moussa", "0700000003", s3, "DISPO", "A_LA_SOURCE", 3000, [c2]),
+      tri(kaderId, "Kader", "0700000001", c1, s1, "ACTIVE", "A_LA_SOURCE", 2500),
+      tri(yaoId, "Yao", "0700000002", c1, s2, "ACTIVE", "EN_ROUTE", 2500),
+      // Seydou dort : ses nouvelles commandes partent en PROGRAMMED (demain 8h).
+      tri(seydouId, "Seydou", "0700000005", c1, null, "OFFLINE", "A_LA_SOURCE", 2000),
+      // Moussa est en pause : ses nouvelles commandes partent en QUEUED (aujourd'hui).
+      tri(moussaId, "Moussa", "0700000003", c2, s3, "PAUSED", "A_LA_SOURCE", 3000),
       // Koffi : solde de points épuisé (démo de la page bloquante "Solde épuisé").
-      tri(koffiId, "Koffi", "0700000004", s4, "OFF", "A_LA_SOURCE", 2000, [c3], "PAYE", 20, true),
+      tri(koffiId, "Koffi", "0700000004", c3, s4, "OFFLINE", "A_LA_SOURCE", 2000, "PAYE", 20, true),
     ],
     clients: [
       cli(fatouId, "Fatou", "0701020304", c1, "12", 5.3868, -4.2705, "PAYE", 1200),
       // Issa : solde sous 100 (démo de la page bloquante "Solde insuffisant").
       cli(issaId, "Issa", "0705060708", c1, "7", null, null, "IMPAYE", 50),
       cli(ayaId, "Aya", "0709101112", c1, "21", 5.3852, -4.2671, "PAYE", 1200),
+      mariam,
     ],
     commandes: [
-      cmd(fatouId, kaderId, c1, "12", 2500, 1, "EN_ATTENTE", 5.3868, -4.2705, 25),
-      cmd(issaId, kaderId, c1, "7", 2500, 2, "EN_ATTENTE", null, null, 12),
+      cmd(fatouId, kaderId, c1, "12", 2500, 1, "ASSIGNED", 5.3868, -4.2705, 25),
+      cmd(issaId, kaderId, c1, "7", 2500, 2, "ASSIGNED", null, null, 12),
+      manuelle,
       cmd(ayaId, yaoId, c1, "21", 2500, 1, "EN_COURS", 5.3852, -4.2671, 40),
+      ...historique(
+        [
+          { id: fatouId, lot: "12" },
+          { id: ayaId, lot: "21" },
+          { id: issaId, lot: "7" },
+          { id: mariamId, lot: "4" },
+        ],
+        [
+          { id: kaderId, prix: 2500 },
+          { id: yaoId, prix: 2500 },
+        ],
+        c1
+      ),
     ],
-    admin: { telephone: DEFAULT_ADMIN_TEL, password: DEFAULT_ADMIN_PASSWORD, token: null, essais: 0, bloque: null },
+    positions: {},
+    journal: [],
+    settings: { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE },
+    admin: { email: DEMO_ADMIN_EMAIL, password: DEMO_ADMIN_PASSWORD || `!${token()}`, token: null, essais: 0, bloque: null },
   };
 }
 
+/** Historique de démonstration (janvier 2025 → hier) pour la page Statistiques :
+ *  déterministe, ~2 commandes livrées par jour ouvré, quelques annulations. */
+function historique(clients: { id: string; lot: string }[], chauffeurs: { id: string; prix: number }[], citeId: string): MockCommande[] {
+  const out: MockCommande[] = [];
+  let seedRand = 7;
+  const rand = () => (seedRand = (seedRand * 16807) % 2147483647) / 2147483647;
+  const debut = Date.UTC(2025, 0, 1);
+  const fin = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()) - 86400000;
+  for (let j = debut; j <= fin; j += 86400000) {
+    const n = Math.floor(rand() * 3) + (new Date(j).getUTCMonth() % 6 === 2 ? 1 : 0);
+    for (let k = 0; k < n; k++) {
+      const cl = clients[Math.floor(rand() * clients.length)];
+      const ch = chauffeurs[Math.floor(rand() * chauffeurs.length)];
+      const created = j + (7 + Math.floor(rand() * 10)) * 3600000 + Math.floor(rand() * 60) * 60000;
+      const manuel = rand() < 0.28;
+      const r = rand();
+      const status: CommandeStatus = r < 0.07 ? "ANNULEE" : "LIVREE";
+      out.push({
+        id: uid(),
+        client_id: cl.id,
+        tricycle_id: ch.id,
+        cite_id: citeId,
+        lot_numero: cl.lot,
+        prix: ch.prix,
+        position_file: 0,
+        status,
+        lat: null,
+        long: null,
+        programmee_pour: null,
+        arriving_at: null,
+        scheduled_for: new Date(created).toISOString().slice(0, 10),
+        annulable_jusqua: null,
+        source: manuel ? "manual" : "app",
+        added_by_driver_id: manuel ? ch.id : null,
+        is_temporary_client: false,
+        quantite_bidons: manuel ? 2 + Math.floor(rand() * 5) : null,
+        note: null,
+        livree_at: status === "LIVREE" ? new Date(created + (25 + Math.floor(rand() * 70)) * 60000).toISOString() : null,
+        created_at: new Date(created).toISOString(),
+      });
+    }
+  }
+  return out;
+}
+
+/** Même calcul que get_yearly_stats (schema.sql), sur les données locales. */
+function statsDemo(db: DB, annee: number, citeId: string | null, tricycleId: string | null): YearlyStats {
+  const anMois = (iso: string) => ({ an: Number(iso.slice(0, 4)), mois: Number(iso.slice(5, 7)) });
+  const premiere = new Map<string, string>();
+  for (const c of db.commandes) {
+    const p = premiere.get(c.client_id);
+    if (!p || c.created_at < p) premiere.set(c.client_id, c.created_at);
+  }
+  const filtre = db.commandes.filter((c) => (!citeId || c.cite_id === citeId) && (!tricycleId || c.tricycle_id === tricycleId));
+  const cur = filtre.filter((c) => anMois(c.created_at).an === annee);
+  const prev = filtre.filter((c) => anMois(c.created_at).an === annee - 1);
+  const auj = today();
+  const minutes = (c: Commande) => (new Date(c.livree_at!).getTime() - new Date(c.created_at).getTime()) / 60000;
+  const moyenne = (xs: number[]) => (xs.length ? Math.round(xs.reduce((s, x) => s + x, 0) / xs.length) : null);
+  const plus3 = (cs: Commande[]) => {
+    const n = new Map<string, number>();
+    cs.forEach((c) => n.set(c.client_id, (n.get(c.client_id) ?? 0) + 1));
+    return [...n.values()].filter((v) => v > 3).length;
+  };
+
+  const mois = Array.from({ length: 12 }, (_, i) => {
+    const m = i + 1;
+    const cs = cur.filter((c) => anMois(c.created_at).mois === m);
+    const livrees = cs.filter((c) => c.status === "LIVREE");
+    const chrono = livrees.filter((c) => c.livree_at);
+    const clients = new Set(cs.map((c) => c.client_id));
+    const nouveaux = new Set(
+      cs.filter((c) => {
+        const p = anMois(premiere.get(c.client_id)!);
+        return p.an === annee && p.mois === m;
+      }).map((c) => c.client_id)
+    );
+    const rembs = cs.filter((c) => c.status === "ANNULEE" && c.source === "app");
+    return {
+      mois: m,
+      total: cs.length,
+      app: cs.filter((c) => c.source === "app").length,
+      manual: cs.filter((c) => c.source === "manual").length,
+      livrees: livrees.length,
+      annulees: cs.filter((c) => c.status === "ANNULEE").length,
+      echecs: cs.filter((c) => isActive(c.status) && c.scheduled_for < auj).length,
+      bidons: livrees.reduce((s, c) => s + (c.quantite_bidons ?? 0), 0),
+      ca: livrees.reduce((s, c) => s + c.prix, 0),
+      clients_uniques: clients.size,
+      nouveaux: nouveaux.size,
+      recurrents: clients.size - nouveaux.size,
+      clients_plus_3: plus3(cs),
+      temps_moyen_min: moyenne(chrono.map(minutes)),
+      livrees_chronometrees: chrono.length,
+      remboursements_montant: rembs.length * 100,
+      remboursements_nb: rembs.length,
+      total_annee_precedente: prev.filter((c) => anMois(c.created_at).mois === m).length,
+    };
+  });
+
+  const parChauffeur = new Map<string, { id: string; nom: string; mois: number; livraisons: number }>();
+  const parZone = new Map<string, { cite_id: string; cite_nom: string; lot: string; mois: number; total: number }>();
+  for (const c of cur) {
+    const m = anMois(c.created_at).mois;
+    if (c.status === "LIVREE") {
+      const k = `${c.tricycle_id}|${m}`;
+      const nom = db.tricycles.find((t) => t.id === c.tricycle_id)?.nom ?? "Chauffeur supprimé";
+      const e = parChauffeur.get(k) ?? { id: c.tricycle_id, nom, mois: m, livraisons: 0 };
+      e.livraisons += 1;
+      parChauffeur.set(k, e);
+    }
+    const kz = `${c.cite_id}|${c.lot_numero}|${m}`;
+    const ez = parZone.get(kz) ?? { cite_id: c.cite_id, cite_nom: db.cites.find((x) => x.id === c.cite_id)?.nom ?? "?", lot: c.lot_numero, mois: m, total: 0 };
+    ez.total += 1;
+    parZone.set(kz, ez);
+  }
+
+  return {
+    annee,
+    mois,
+    synthese: {
+      clients_actifs: new Set(cur.map((c) => c.client_id)).size,
+      nouveaux: new Set(cur.filter((c) => anMois(premiere.get(c.client_id)!).an === annee).map((c) => c.client_id)).size,
+      clients_plus_3: plus3(cur),
+      temps_moyen_min: moyenne(cur.filter((c) => c.status === "LIVREE" && c.livree_at).map(minutes)),
+    },
+    chauffeurs: [...parChauffeur.values()],
+    zones: [...parZone.values()],
+    options: {
+      cites: [...db.cites].sort((a, b) => a.nom.localeCompare(b.nom, "fr", { numeric: true })),
+      chauffeurs: db.tricycles.map((t) => ({ id: t.id, nom: t.nom, cite_id: t.cite_id })).sort((a, b) => a.nom.localeCompare(b.nom)),
+    },
+  };
+}
+
+/** Rejoue les tâches cron de schema.sql (rollover 23h59, sortie des PROGRAMMED à 8h, TTL GPS). */
+function cron(db: DB): boolean {
+  let changed = false;
+  const now = Date.now();
+  for (const c of db.commandes) {
+    // 23h59 : une commande QUEUED d'un jour précédent passe PROGRAMMED pour le 8h suivant.
+    if (c.status === "QUEUED" && c.jour_file && c.jour_file < today()) {
+      c.status = "PROGRAMMED";
+      c.programmee_pour = prochain8h(new Date(`${c.jour_file}T23:59:00Z`)).toISOString();
+      c.scheduled_for = c.programmee_pour.slice(0, 10);
+      c.jour_file = undefined;
+      changed = true;
+    }
+    // 00h00 / 8h00 : PROGRAMMED dont le jour est arrivé → ASSIGNED si le chauffeur est ACTIVE, sinon QUEUED.
+    if (c.status === "PROGRAMMED" && c.scheduled_for <= today()) {
+      const t = db.tricycles.find((x) => x.id === c.tricycle_id);
+      c.status = t?.status === "ACTIVE" ? "ASSIGNED" : "QUEUED";
+      c.jour_file = c.status === "QUEUED" ? today() : undefined;
+      c.programmee_pour = null;
+      changed = true;
+    }
+  }
+  for (const [tid, p] of Object.entries(db.positions)) {
+    if (now - new Date(p.maj).getTime() > POSITION_MAX_AGE_MS) {
+      delete db.positions[tid];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function read(): DB {
+  let db: DB | null = null;
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return JSON.parse(raw) as DB;
+    if (raw) db = JSON.parse(raw) as DB;
   } catch {}
-  const db = seed();
-  write(db, false);
+  if (!db) {
+    db = seed();
+    write(db, false);
+    return db;
+  }
+  db.positions ??= {};
+  db.journal ??= [];
+  db.settings ??= { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE };
+  db.settings.depot_phone ??= DEFAULT_DEPOT_PHONE;
+  if (cron(db)) write(db, false);
   return db;
 }
 
@@ -223,10 +474,21 @@ function tx<T>(fn: (db: DB) => T): T {
   return out;
 }
 
-const actives = (db: DB, tricycleId: string) => db.commandes.filter((c) => c.tricycle_id === tricycleId && ACTIVE.includes(c.status));
+const actives = (db: DB, tricycleId: string) => db.commandes.filter((c) => c.tricycle_id === tricycleId && isActive(c.status));
+
+/** Position live d'une commande, seulement pendant ARRIVING (10 min max) et si elle a moins de 5 min. */
+function livePosition(db: DB, c: Commande): MockPosition | null {
+  const p = db.positions[c.tricycle_id];
+  if (!p || p.commande_id !== c.id || c.status !== "ARRIVING" || !c.arriving_at) return null;
+  const now = Date.now();
+  if (now - new Date(c.arriving_at).getTime() > PARTAGE_GPS_MAX_MS) return null;
+  if (now - new Date(p.maj).getTime() > POSITION_MAX_AGE_MS) return null;
+  return p;
+}
 
 function chauffeurProfile(db: DB, t: MockTricycle): ChauffeurProfile {
   const s = db.sources.find((x) => x.id === t.source_id);
+  const ci = db.cites.find((x) => x.id === t.cite_id);
   return {
     id: t.id,
     nom: t.nom,
@@ -236,7 +498,8 @@ function chauffeurProfile(db: DB, t: MockTricycle): ChauffeurProfile {
     prix_1000: t.prix_1000,
     statut: t.statut,
     source_nom: s?.nom ?? null,
-    cites: t.cite_ids.map((id) => db.cites.find((c) => c.id === id)).filter((c): c is Cite => !!c),
+    cite_id: t.cite_id,
+    cite_nom: ci?.nom ?? "?",
     solde_points: t.solde_points,
     total_points_utilises: t.total_points_utilises,
     is_offline: t.is_offline,
@@ -261,6 +524,7 @@ function suivi(db: DB, c: Commande): Suivi {
   const t = db.tricycles.find((x) => x.id === c.tricycle_id)!;
   const s = db.sources.find((x) => x.id === t.source_id);
   const ci = db.cites.find((x) => x.id === c.cite_id)!;
+  const p = livePosition(db, c);
   return {
     id: c.id,
     status: c.status,
@@ -270,16 +534,44 @@ function suivi(db: DB, c: Commande): Suivi {
     lat: c.lat,
     long: c.long,
     created_at: c.created_at,
+    programmee_pour: c.programmee_pour,
+    arriving_at: c.arriving_at,
+    scheduled_for: c.scheduled_for,
+    annulable_jusqua: c.annulable_jusqua,
+    source: c.source,
     tricycle_id: t.id,
     chauffeur_nom: t.nom,
     chauffeur_tel: t.telephone,
     etat: t.etat,
+    chauffeur_status: t.status,
     cite_nom: ci.nom,
     source_nom: s?.nom ?? null,
-    tricycle_lat: t.lat,
-    tricycle_long: t.long,
-    tricycle_position_maj: t.position_maj,
+    tricycle_lat: p?.lat ?? null,
+    tricycle_long: p?.long ?? null,
+    tricycle_position_maj: p?.maj ?? null,
   };
+}
+
+/** -50 points au chauffeur pour une commande reçue (+ fidélité, passage is_offline). */
+function debiterChauffeur(t: MockTricycle) {
+  t.solde_points -= 50;
+  t.total_points_utilises += 50;
+  if (t.total_points_utilises >= 5000) {
+    t.solde_points += 50;
+    t.total_points_utilises = 0;
+  }
+  t.is_offline = t.solde_points < 50;
+}
+
+/** Retire une commande de la file : les suivantes remontent d'un cran. */
+function sortirDeLaFile(db: DB, cmd: Commande, status: "LIVREE" | "ANNULEE") {
+  const pos = cmd.position_file;
+  cmd.status = status;
+  cmd.position_file = 0;
+  cmd.programmee_pour = null;
+  actives(db, cmd.tricycle_id).forEach((x) => {
+    if (x.position_file > pos) x.position_file -= 1;
+  });
 }
 
 function authTricycle(db: DB, c: Creds): MockTricycle {
@@ -295,7 +587,7 @@ function authClient(db: DB, c: Creds): MockClient {
   return cl;
 }
 function authAdmin(db: DB, c: Creds): void {
-  if (c.role !== "admin" || db.admin.telephone !== normalizePhone(c.tel) || !db.admin.token || db.admin.token !== c.token) return fail("REFUSE");
+  if (c.role !== "admin" || !db.admin.email || db.admin.email !== c.tel.trim().toLowerCase() || !db.admin.token || db.admin.token !== c.token) return fail("REFUSE");
 }
 
 type Lockable = { essais: number; bloque: number | null };
@@ -324,6 +616,8 @@ function checkAuth<T extends Lockable>(entry: T | undefined, stored: string, sec
 
 // ─── Backend ───────────────────────────────────────────────────────────────
 
+const ORDRE_STATUS: Record<TricycleStatus, number> = { ACTIVE: 0, PAUSED: 1, OFFLINE: 2 };
+
 export const mock: Backend = {
   async fetchCites() {
     return read().cites;
@@ -332,10 +626,11 @@ export const mock: Backend = {
     return read().sources;
   },
 
+  // Tous les chauffeurs de la cité, quel que soit leur statut (ils ne refusent jamais).
   async fetchTricyclesDispo(citeId) {
     const db = read();
     return db.tricycles
-      .filter((t) => t.cite_ids.includes(citeId) && t.status === "DISPO" && t.statut !== "BLOQUE" && !t.is_offline)
+      .filter((t) => t.cite_id === citeId && t.statut !== "BLOQUE" && !t.is_offline)
       .map((t) => {
         const s = db.sources.find((x) => x.id === t.source_id);
         return {
@@ -346,30 +641,50 @@ export const mock: Backend = {
           etat: t.etat,
           file_count: actives(db, t.id).length,
           prix_1000: t.prix_1000,
+          status: t.status,
         };
       })
-      .sort((a, b) => a.file_count - b.file_count || a.nom.localeCompare(b.nom));
+      .sort((a, b) => ORDRE_STATUS[a.status] - ORDRE_STATUS[b.status] || a.file_count - b.file_count || a.nom.localeCompare(b.nom));
   },
 
-  // Points (1 FCFA = 1 point) — système 100% recharge, double déduction
-  // atomique à la CRÉATION de la commande (dès qu'elle est assignée au
-  // chauffeur, pas à l'acceptation de la livraison) : le client paie 100
-  // points, le chauffeur en perd 50 (avec fidélité + passage hors ligne).
+  // Mêmes contrôles et même ordre que creer_commande (schema.sql).
   async creerCommande(c: NouvelleCommande, creds: Creds) {
     return tx((db) => {
       const cl = authClient(db, creds);
       if (cl.statut === "BLOQUE") return fail("COMPTE_BLOQUE");
+      const deja = db.commandes
+        .filter((x) => x.client_id === cl.id && isActive(x.status))
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+      if (deja) throw tropDeCommandes(shortId(deja.id));
       if (cl.solde_points < 100) return fail("SOLDE_INSUFFISANT_CLIENT");
       const t = db.tricycles.find((x) => x.id === c.tricycleId);
-      if (!t || t.status !== "DISPO" || t.statut === "BLOQUE") return fail("TRICYCLE_INDISPONIBLE");
-      if (t.solde_points < 50) return fail("SOLDE_INSUFFISANT");
-      if (db.commandes.some((x) => x.client_id === cl.id && ACTIVE.includes(x.status))) return fail("TROP_DE_COMMANDES");
+      if (!t || t.statut === "BLOQUE" || t.is_offline || t.solde_points < 50) return fail("TRICYCLE_INDISPONIBLE");
+      if (t.cite_id !== cl.cite_id) return fail("HORS_ZONE");
 
       const gpsIn = c.gps && Math.abs(c.gps.lat) <= 90 && Math.abs(c.gps.long) <= 180 ? c.gps : null;
       const lat = gpsIn?.lat ?? cl.lat;
       const long = gpsIn?.long ?? cl.long;
 
-      const commande: Commande = {
+      const src = db.sources.find((s) => s.id === t.source_id);
+      if (src?.lat != null && src.long != null && lat != null && long != null && distanceMetres(src.lat, src.long, lat, long) > DISTANCE_MAX_M) {
+        return fail("TROP_LOIN");
+      }
+
+      let status: CommandeStatus;
+      let programmee: string | null = null;
+      let jour = today();
+      if (c.demain) {
+        status = "PROGRAMMED";
+        jour = jourAbidjan(1);
+        programmee = aHeure(jour, 8);
+      } else {
+        status = t.status === "ACTIVE" ? "ASSIGNED" : t.status === "PAUSED" ? "QUEUED" : "PROGRAMMED";
+        if (status === "PROGRAMMED") {
+          programmee = prochain8h().toISOString();
+          jour = programmee.slice(0, 10);
+        }
+      }
+      const commande: MockCommande = {
         id: uid(),
         client_id: cl.id,
         tricycle_id: t.id,
@@ -377,25 +692,47 @@ export const mock: Backend = {
         lot_numero: cl.lot_numero,
         prix: t.prix_1000,
         position_file: actives(db, t.id).length + 1,
-        status: "EN_ATTENTE",
+        status,
         lat,
         long,
+        programmee_pour: programmee,
+        arriving_at: null,
+        scheduled_for: jour,
+        annulable_jusqua: jour > today() ? aHeure(jourAbidjan(-1, new Date(`${jour}T12:00:00Z`)), HEURE_LIMITE_ANNULATION) : null,
+        source: "app",
+        added_by_driver_id: null,
+        is_temporary_client: false,
+        quantite_bidons: null,
+        note: null,
+        livree_at: null,
         created_at: new Date().toISOString(),
+        jour_file: status === "QUEUED" ? today() : undefined,
       };
       db.commandes.push(commande);
 
       cl.solde_points -= 100;
-
-      t.solde_points -= 50;
-      t.total_points_utilises += 50;
-      if (t.total_points_utilises >= 5000) {
-        t.solde_points += 50;
-        t.total_points_utilises = 0;
-      }
-      t.is_offline = t.solde_points < 50;
+      debiterChauffeur(t);
 
       return commande.id;
     });
+  },
+
+  // Démo : évènements localStorage (même onglet + synchro entre onglets), sans notion de canal.
+  subscribeTopics(_topics, onChange) {
+    window.addEventListener(MOCK_EVENT, onChange);
+    window.addEventListener("storage", onChange);
+    return () => {
+      window.removeEventListener(MOCK_EVENT, onChange);
+      window.removeEventListener("storage", onChange);
+    };
+  },
+
+  async fetchDepotPhone() {
+    return read().settings.depot_phone;
+  },
+
+  async fetchEssaiFin() {
+    return read().settings.trial_ends_at;
   },
 
   async fetchSuivi(id) {
@@ -406,44 +743,52 @@ export const mock: Backend = {
 
   // ── Authentification unifiée ───────────────────────────────────────────
 
-  async login(roleDemande, telRaw, pin): Promise<LoginResult> {
+  // Même règle que auth_login('auto') : compte client puis compte chauffeur du numéro.
+  async login(telRaw, pin): Promise<LoginResult> {
     const db = read();
     const tel = normalizePhone(telRaw);
-
-    // L'admin est reconnu par son téléphone, quel que soit l'onglet choisi :
-    // aucun lien /admin visible, le même formulaire sert aux 3 rôles.
-    if (db.admin.telephone === tel) {
-      const r = checkAuth(db.admin, db.admin.password, pin);
-      if (!r.ok) {
-        write(db, false);
-        throw new AppError(r.error);
-      }
-      db.admin.token = token();
-      write(db);
-      return { role: "admin", session: { creds: { role: "admin", tel, token: db.admin.token }, profile: { telephone: tel } } };
-    }
-
-    if (roleDemande === "client") {
-      const cl = db.clients.find((x) => x.telephone === tel);
-      const r = checkAuth(cl, cl?.pin ?? "", pin);
-      if (!r.ok) {
-        write(db, false);
-        throw new AppError(r.error);
-      }
-      cl!.token = token();
-      write(db);
-      return { role: "client", session: { creds: { role: "client", tel, token: cl!.token }, profile: clientProfile(db, cl!) } };
-    }
-
+    const cl = db.clients.find((x) => x.telephone === tel && !x.is_temporary);
     const t = db.tricycles.find((x) => x.telephone === tel);
-    const r = checkAuth(t, t?.pin ?? "", pin);
+    if (!cl && !t) throw new AppError("AUTH");
+
+    const libre = (e: Lockable) => !e.bloque || e.bloque <= Date.now();
+    if (cl && libre(cl) && cl.pin === pin) {
+      cl.essais = 0;
+      cl.bloque = null;
+      cl.token = token();
+      write(db);
+      return { role: "client", session: { creds: { role: "client", tel, token: cl.token }, profile: clientProfile(db, cl) } };
+    }
+    if (t && libre(t) && t.pin === pin) {
+      t.essais = 0;
+      t.bloque = null;
+      t.token = token();
+      write(db);
+      return { role: "chauffeur", session: { creds: { role: "chauffeur", tel, token: t.token }, profile: chauffeurProfile(db, t) } };
+    }
+
+    let bloque = false;
+    for (const e of [cl, t]) {
+      if (!e) continue;
+      const r = checkAuth(e, e.pin, pin); // ici : bloqué ou PIN faux → compte l'échec
+      if (!r.ok && r.error === "BLOQUE") bloque = true;
+    }
+    write(db, false);
+    throw new AppError(bloque ? "BLOQUE" : "AUTH");
+  },
+
+  async loginAdmin(emailRaw, password) {
+    const db = read();
+    const email = emailRaw.trim().toLowerCase();
+    if (!db.admin.email || db.admin.email !== email) throw new AppError("AUTH_ADMIN");
+    const r = checkAuth(db.admin, db.admin.password, password);
     if (!r.ok) {
       write(db, false);
-      throw new AppError(r.error);
+      throw new AppError(r.error === "AUTH" ? "AUTH_ADMIN" : r.error);
     }
-    t!.token = token();
+    db.admin.token = token();
     write(db);
-    return { role: "chauffeur", session: { creds: { role: "chauffeur", tel, token: t!.token }, profile: chauffeurProfile(db, t!) } };
+    return { creds: { role: "admin", tel: email, token: db.admin.token }, profile: { email } };
   },
 
   async inscrireClient(i: InscriptionClient) {
@@ -456,10 +801,26 @@ export const mock: Backend = {
       if (!/^[0-9]{4}$/.test(i.pin)) return fail("PIN_INVALIDE");
       if (!lot || lot.length > 20) return fail("LOT_INVALIDE");
       if (!db.cites.some((c) => c.id === i.citeId)) return fail("CITE_INTROUVABLE");
-      if (db.admin.telephone === tel) return fail("DEJA_INSCRIT");
-      if (db.clients.some((c) => c.telephone === tel)) return fail("DEJA_INSCRIT");
+      if (db.clients.some((c) => c.telephone === tel && !c.is_temporary)) return fail("DEJA_INSCRIT");
 
       const gps = i.gps && Math.abs(i.gps.lat) <= 90 && Math.abs(i.gps.long) <= 180 ? i.gps : null;
+
+      // Client temporaire (saisi par un chauffeur) : il récupère son compte et son historique.
+      const temp = db.clients.find((c) => c.telephone === tel && c.is_temporary);
+      if (temp) {
+        Object.assign(temp, {
+          nom,
+          cite_id: i.citeId,
+          lot_numero: lot,
+          lat: gps?.lat ?? null,
+          long: gps?.long ?? null,
+          solde_points: 1200,
+          is_temporary: false,
+          pin: i.pin,
+          token: token(),
+        });
+        return { creds: { role: "client" as const, tel, token: temp.token! }, profile: clientProfile(db, temp) };
+      }
       const cl: MockClient = {
         id: uid(),
         nom,
@@ -472,6 +833,7 @@ export const mock: Backend = {
         date_paiement: null,
         // Bonus d'essai à l'inscription : 1200 points = ~12 commandes gratuites.
         solde_points: 1200,
+        is_temporary: false,
         pin: i.pin,
         token: token(),
         essais: 0,
@@ -486,33 +848,28 @@ export const mock: Backend = {
     return tx((db) => {
       const nom = i.nom.trim();
       const tel = normalizePhone(i.tel);
-      const citeIds = [...new Set(i.citeIds)];
       if (!nom || nom.length > 40) return fail("NOM_INVALIDE");
       if (tel.length < 8 || tel.length > 16) return fail("TEL_INVALIDE");
       if (!/^[0-9]{4}$/.test(i.pin)) return fail("PIN_INVALIDE");
       if (!prixValide(i.prix)) return fail("PRIX_INVALIDE");
-      if (citeIds.length === 0 || !citeIds.every((id) => db.cites.some((c) => c.id === id))) return fail("CITE_INTROUVABLE");
-      if (i.sourceId && !db.sources.some((s) => s.id === i.sourceId && citeIds.includes(s.cite_id))) return fail("SOURCE_INTROUVABLE");
-      if (db.admin.telephone === tel) return fail("DEJA_INSCRIT");
+      if (!i.citeId || !db.cites.some((c) => c.id === i.citeId)) return fail("CITE_INTROUVABLE");
+      if (i.sourceId && !db.sources.some((s) => s.id === i.sourceId && s.cite_id === i.citeId)) return fail("SOURCE_INTROUVABLE");
       if (db.tricycles.some((t) => t.telephone === tel)) return fail("DEJA_INSCRIT");
 
       const t: MockTricycle = {
         id: uid(),
         nom,
         telephone: tel,
+        cite_id: i.citeId,
         source_id: i.sourceId,
-        status: "OFF",
+        status: "OFFLINE",
         etat: "A_LA_SOURCE",
         prix_1000: i.prix,
         statut: "IMPAYE",
-        cite_ids: citeIds,
         // Bonus d'essai à l'inscription : 2500 points = 50 livraisons gratuites.
         solde_points: 2500,
         total_points_utilises: 0,
         is_offline: false,
-        lat: null,
-        long: null,
-        position_maj: null,
         pin: i.pin,
         token: token(),
         essais: 0,
@@ -533,8 +890,44 @@ export const mock: Backend = {
   async clientCommandeActive(c) {
     const db = read();
     const cl = authClient(db, c);
-    const cmd = db.commandes.find((x) => x.client_id === cl.id && ACTIVE.includes(x.status));
+    const cmd = db.commandes.find((x) => x.client_id === cl.id && isActive(x.status));
     return cmd ? suivi(db, cmd) : null;
+  },
+
+  async clientAnnulerCommande(c, commandeId) {
+    tx((db) => {
+      const cl = authClient(db, c);
+      const cmd = db.commandes.find((x) => x.id === commandeId && x.client_id === cl.id);
+      if (!cmd || !COMMANDES_ANNULABLES.includes(cmd.status)) return fail("ANNULATION_IMPOSSIBLE");
+      if (cmd.annulable_jusqua && Date.now() >= new Date(cmd.annulable_jusqua).getTime()) return fail("ANNULATION_TARDIVE");
+      sortirDeLaFile(db, cmd, "ANNULEE");
+      if (cmd.source === "app") cl.solde_points += 100;
+      const t = db.tricycles.find((x) => x.id === cmd.tricycle_id);
+      if (t) {
+        t.solde_points += 50;
+        if (t.solde_points >= 50) t.is_offline = false;
+      }
+    });
+  },
+
+  // Démo : la position est relue à chaque écriture (évènements localStorage).
+  subscribePosition(commandeId, onPosition) {
+    let last = "";
+    const check = () => {
+      const db = read();
+      const c = db.commandes.find((x) => x.id === commandeId);
+      const p = c ? livePosition(db, c) : null;
+      if (p && p.maj !== last) {
+        last = p.maj;
+        onPosition({ lat: p.lat, long: p.long, at: p.maj });
+      }
+    };
+    window.addEventListener(MOCK_EVENT, check);
+    window.addEventListener("storage", check);
+    return () => {
+      window.removeEventListener(MOCK_EVENT, check);
+      window.removeEventListener("storage", check);
+    };
   },
 
   // ── Chauffeur ───────────────────────────────────────────────────────────
@@ -559,18 +952,125 @@ export const mock: Backend = {
           lat: cmd.lat,
           long: cmd.long,
           created_at: cmd.created_at,
+          programmee_pour: cmd.programmee_pour,
+          arriving_at: cmd.arriving_at,
+          scheduled_for: cmd.scheduled_for,
+          source: cmd.source,
+          is_temporary_client: cmd.is_temporary_client,
+          quantite_bidons: cmd.quantite_bidons,
+          note: cmd.note,
           client_nom: cl?.nom ?? "Client",
           client_tel: cl?.telephone ?? "",
+          added_by_nom: db.tricycles.find((x) => x.id === cmd.added_by_driver_id)?.nom ?? null,
         };
       });
+  },
+
+  async chauffeurCommandeManuelle(c, m) {
+    return tx((db) => {
+      const t = authTricycle(db, c);
+      const nom = m.nom.trim();
+      const tel = phoneCI(m.tel);
+      const lot = m.lot.trim();
+      const note = m.note.trim() || null;
+      if (!nom || nom.length > 40) return fail("NOM_INVALIDE");
+      if (!tel) return fail("TEL_INVALIDE_CI");
+      if (!lot || lot.length > 20) return fail("LOT_INVALIDE");
+      if (m.quantiteBidons != null && !(Number.isInteger(m.quantiteBidons) && m.quantiteBidons >= 1 && m.quantiteBidons <= 200)) return fail("QUANTITE_INVALIDE");
+      if (note && note.length > 280) return fail("NOTE_INVALIDE");
+      if (t.statut === "BLOQUE") return fail("COMPTE_BLOQUE");
+      if (t.is_offline || t.solde_points < 50) return fail("SOLDE_INSUFFISANT");
+
+      let cl = db.clients
+        .filter((x) => [tel, `+225${tel}`, `00225${tel}`].includes(x.telephone))
+        .sort((a, b) => Number(a.is_temporary) - Number(b.is_temporary))[0];
+      if (cl) {
+        if (cl.cite_id !== t.cite_id) return fail("HORS_ZONE");
+        if (cl.statut === "BLOQUE") return fail("CLIENT_BLOQUE");
+        const deja = db.commandes
+          .filter((x) => x.client_id === cl!.id && isActive(x.status))
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+        if (deja) throw tropDeCommandes(shortId(deja.id));
+      } else {
+        cl = {
+          id: uid(),
+          nom,
+          telephone: tel,
+          cite_id: t.cite_id,
+          lot_numero: lot,
+          lat: null,
+          long: null,
+          statut: "IMPAYE",
+          date_paiement: null,
+          solde_points: 0,
+          is_temporary: true,
+          pin: `!${token()}`,
+          token: null,
+          essais: 0,
+          bloque: null,
+        };
+        db.clients.push(cl);
+      }
+
+      const commande: MockCommande = {
+        id: uid(),
+        client_id: cl.id,
+        tricycle_id: t.id,
+        cite_id: t.cite_id,
+        lot_numero: lot,
+        prix: t.prix_1000,
+        position_file: actives(db, t.id).length + 1,
+        status: "ASSIGNED",
+        lat: cl.lat,
+        long: cl.long,
+        programmee_pour: null,
+        arriving_at: null,
+        scheduled_for: today(),
+        annulable_jusqua: null,
+        source: "manual",
+        added_by_driver_id: t.id,
+        is_temporary_client: cl.is_temporary,
+        quantite_bidons: m.quantiteBidons,
+        note,
+        livree_at: null,
+        created_at: new Date().toISOString(),
+      };
+      db.commandes.push(commande);
+      debiterChauffeur(t);
+      db.journal.push({
+        action: "COMMANDE_MANUELLE",
+        acteur_id: t.id,
+        details: { commande_id: commande.id, client_id: cl.id, client_temporaire: cl.is_temporary, chauffeur_nom: t.nom },
+        created_at: commande.created_at,
+      });
+      return commande.id;
+    });
+  },
+
+  async chauffeurLots(c) {
+    const db = read();
+    const t = authTricycle(db, c);
+    return [...new Set(db.clients.filter((x) => x.cite_id === t.cite_id).map((x) => x.lot_numero))].sort((a, b) =>
+      a.localeCompare(b, "fr", { numeric: true })
+    );
   },
 
   async chauffeurSetStatus(c, status) {
     tx((db) => {
       const t = authTricycle(db, c);
-      if (status === "DISPO" && t.statut === "BLOQUE") return fail("COMPTE_BLOQUE");
-      if (status === "DISPO" && t.is_offline) return fail("SOLDE_INSUFFISANT");
+      if (status !== "OFFLINE" && t.statut === "BLOQUE") return fail("COMPTE_BLOQUE");
+      if (status !== "OFFLINE" && t.is_offline) return fail("SOLDE_INSUFFISANT");
       t.status = status;
+      if (status === "ACTIVE") {
+        // Reprise : ses commandes QUEUED (et PROGRAMMED du jour) lui sont assignées, FIFO conservé.
+        actives(db, t.id).forEach((x) => {
+          if (x.status === "QUEUED" || (x.status === "PROGRAMMED" && x.scheduled_for <= today())) {
+            x.status = "ASSIGNED";
+            x.programmee_pour = null;
+            (x as MockCommande).jour_file = undefined;
+          }
+        });
+      }
     });
   },
 
@@ -587,29 +1087,31 @@ export const mock: Backend = {
     });
   },
 
-  // Position GPS live (watchPosition, ~ toutes les 5s) : permet au client de
-  // voir le tricycle bouger sur la carte pendant la livraison.
+  // Acceptée uniquement pendant ARRIVING (10 min max) — sinon { actif: false }.
   async chauffeurSetPosition(c, lat, long) {
-    tx((db) => {
+    return tx((db) => {
       if (!Number.isFinite(lat) || !Number.isFinite(long) || Math.abs(lat) > 90 || Math.abs(long) > 180) return fail("POSITION_INVALIDE");
       const t = authTricycle(db, c);
-      t.lat = lat;
-      t.long = long;
-      t.position_maj = new Date().toISOString();
+      const cmd = actives(db, t.id).find(
+        (x) => x.status === "ARRIVING" && x.arriving_at && Date.now() - new Date(x.arriving_at).getTime() < PARTAGE_GPS_MAX_MS
+      );
+      if (!cmd) {
+        delete db.positions[t.id];
+        return { actif: false };
+      }
+      db.positions[t.id] = { commande_id: cmd.id, lat, long, maj: new Date().toISOString() };
+      return { actif: true };
     });
   },
 
-  // Les points (1 FCFA = 1 point, -50 par commande) sont désormais déduits dès
-  // la CRÉATION de la commande (creerCommande), pas ici : au moment où le
-  // chauffeur clique « Je pars livrer », la commande est déjà assignée et déjà
-  // payée en points. Renvoie quand même {bonusFidelite, soldePoints} (solde
-  // inchangé, bonus toujours false) pour ne pas casser le contrat frontend.
+  // Les points sont déduits à la CRÉATION de la commande, pas ici. Renvoie quand
+  // même {bonusFidelite, soldePoints} (bonus toujours false) pour le contrat frontend.
   async chauffeurPartir(c) {
     return tx((db) => {
       const t = authTricycle(db, c);
       const file = actives(db, t.id);
-      if (file.some((x) => x.status === "EN_COURS")) return fail("DEJA_EN_COURS");
-      const next = file.filter((x) => x.status === "EN_ATTENTE").sort((a, b) => a.position_file - b.position_file)[0];
+      if (file.some((x) => x.status === "EN_COURS" || x.status === "ARRIVING")) return fail("DEJA_EN_COURS");
+      const next = file.filter((x) => x.status === "ASSIGNED").sort((a, b) => a.position_file - b.position_file)[0];
       if (!next) return fail("FILE_VIDE");
 
       next.status = "EN_COURS";
@@ -619,16 +1121,30 @@ export const mock: Backend = {
     });
   },
 
-  async chauffeurLivrer(c, commandeId) {
+  async chauffeurArriver(c, commandeId) {
     tx((db) => {
       const t = authTricycle(db, c);
       const cmd = db.commandes.find((x) => x.id === commandeId && x.tricycle_id === t.id && x.status === "EN_COURS");
       if (!cmd) return fail("COMMANDE_INTROUVABLE");
-      const pos = cmd.position_file;
-      cmd.status = "LIVRE";
-      cmd.position_file = 0;
-      actives(db, t.id).forEach((x) => {
-        if (x.position_file > pos) x.position_file -= 1;
+      cmd.status = "ARRIVING";
+      cmd.arriving_at = new Date().toISOString();
+    });
+  },
+
+  async chauffeurLivrer(c, commandeId) {
+    tx((db) => {
+      const t = authTricycle(db, c);
+      const cmd = db.commandes.find((x) => x.id === commandeId && x.tricycle_id === t.id && (x.status === "EN_COURS" || x.status === "ARRIVING"));
+      if (!cmd) return fail("COMMANDE_INTROUVABLE");
+      sortirDeLaFile(db, cmd, "LIVREE");
+      cmd.livree_at = new Date().toISOString();
+      delete db.positions[t.id]; // fin de course : le partage GPS s'arrête
+      const essai = today() <= db.settings.trial_ends_at;
+      db.journal.push({
+        action: "FACTURATION",
+        acteur_id: t.id,
+        details: { commande_id: cmd.id, prix: cmd.prix, source: cmd.source, periode_essai: essai, facturable: !essai, trial_ends_at: db.settings.trial_ends_at },
+        created_at: new Date().toISOString(),
       });
     });
   },
@@ -642,24 +1158,23 @@ export const mock: Backend = {
       return {
         cites: db.cites,
         sources: db.sources,
-        tricycles: db.tricycles.map(({ id, nom, telephone, source_id, status, etat, prix_1000, statut, cite_ids, solde_points, total_points_utilises, is_offline, lat, long, position_maj }) => ({
+        tricycles: db.tricycles.map(({ id, nom, telephone, cite_id, source_id, status, etat, prix_1000, statut, solde_points, total_points_utilises, is_offline }) => ({
           id,
           nom,
           telephone,
+          cite_id,
           source_id,
           status,
           etat,
           prix_1000,
           statut,
-          cite_ids,
           solde_points,
           total_points_utilises,
           is_offline,
-          lat,
-          long,
-          position_maj,
         })),
-        clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, solde_points }) => ({
+        settings: db.settings,
+        clients: db.clients.map(({ id, nom, telephone, cite_id, lot_numero, lat, long, statut, date_paiement, solde_points, is_temporary }) => ({
+          is_temporary,
           id,
           nom,
           telephone,
@@ -671,7 +1186,7 @@ export const mock: Backend = {
           date_paiement,
           solde_points,
         })),
-        commandes: [...db.commandes].sort((a, b) => b.created_at.localeCompare(a.created_at)),
+        commandes: db.commandes.map(({ jour_file: _, ...cmd }) => cmd).sort((a, b) => b.created_at.localeCompare(a.created_at)),
       };
     },
 
@@ -706,6 +1221,7 @@ export const mock: Backend = {
         const dropTricycles = (ids: string[]) => {
           db.tricycles = db.tricycles.filter((t) => !ids.includes(t.id));
           db.commandes = db.commandes.filter((cm) => !ids.includes(cm.tricycle_id));
+          ids.forEach((tid) => delete db.positions[tid]);
         };
         if (table === "tricycles") dropTricycles([id]);
         else if (table === "clients") {
@@ -715,12 +1231,8 @@ export const mock: Backend = {
           dropTricycles(db.tricycles.filter((t) => t.source_id === id).map((t) => t.id));
           db.sources = db.sources.filter((s) => s.id !== id);
         } else {
-          const sourceIds = db.sources.filter((s) => s.cite_id === id).map((s) => s.id);
-          // Un chauffeur dont la SOURCE choisie appartient à cette cité est supprimé
-          // (comme avant) ; un chauffeur seulement RATTACHÉ à cette cité (parmi
-          // d'autres) la perd juste — il reste visible dans ses autres cités.
-          dropTricycles(db.tricycles.filter((t) => t.source_id != null && sourceIds.includes(t.source_id)).map((t) => t.id));
-          db.tricycles.forEach((t) => (t.cite_ids = t.cite_ids.filter((cid) => cid !== id)));
+          // Supprimer une cité supprime ses chauffeurs, sources, clients et commandes (cascade SQL).
+          dropTricycles(db.tricycles.filter((t) => t.cite_id === id).map((t) => t.id));
           db.sources = db.sources.filter((s) => s.cite_id !== id);
           db.clients = db.clients.filter((cl) => cl.cite_id !== id);
           db.commandes = db.commandes.filter((cm) => cm.cite_id !== id);
@@ -734,14 +1246,14 @@ export const mock: Backend = {
         authAdmin(db, c);
         if (table === "tricycles") {
           const t = db.tricycles.find((x) => x.id === id);
-          if (!t) return fail("COMMANDE_INTROUVABLE");
-          t!.statut = statut;
-          if (statut === "BLOQUE") t!.status = "OFF"; // un tricycle bloqué ne peut pas rester visible des clients
+          if (!t) return fail("CHAUFFEUR_INTROUVABLE");
+          t.statut = statut;
+          if (statut === "BLOQUE") t.status = "OFFLINE"; // un tricycle bloqué ne peut pas rester visible des clients
         } else {
           const cl = db.clients.find((x) => x.id === id);
-          if (!cl) return fail("COMMANDE_INTROUVABLE");
-          cl!.statut = statut;
-          if (statut === "PAYE") cl!.date_paiement = new Date().toISOString();
+          if (!cl) return fail("CLIENT_INTROUVABLE");
+          cl.statut = statut;
+          if (statut === "PAYE") cl.date_paiement = new Date().toISOString();
         }
       });
     },
@@ -766,9 +1278,24 @@ export const mock: Backend = {
     async changerMotDePasse(c, nouveau) {
       tx((db) => {
         authAdmin(db, c);
-        if (!nouveau || nouveau.length < 6) return fail("MDP_INVALIDE");
+        if (!nouveau || nouveau.length < 10) return fail("MDP_INVALIDE");
         db.admin.password = nouveau;
       });
+    },
+
+    async setDepotPhone(c, tel) {
+      tx((db) => {
+        authAdmin(db, c);
+        const n = phoneCI(tel);
+        if (!n) return fail("TEL_INVALIDE_CI");
+        db.settings.depot_phone = n;
+      });
+    },
+
+    async statsAnnuelles(c, annee, citeId, tricycleId) {
+      const db = read();
+      authAdmin(db, c);
+      return statsDemo(db, annee, citeId, tricycleId);
     },
 
     subscribe(onChange, onStatus) {

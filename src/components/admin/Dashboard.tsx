@@ -2,24 +2,25 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo, useState } from "react";
-import { formatFcfa, heure } from "@/lib/format";
+import { CHAUFFEUR_STATUS_LABEL, COMMANDE_LABEL, COMMANDES_ACTIVES, FILTRES_SOURCE, type FiltreSource, formatFcfa, heure } from "@/lib/format";
 import type { AdminData, Commande } from "@/lib/types";
 import { CustomSelect } from "../CustomSelect";
 import MapLazy from "../MapLazy";
 import type { MapLine, MapMarker } from "../MapView";
-import { Badge, Counter } from "../ui";
+import { Badge, CommandeBadge, Counter, SegmentedFilter, SourceBadge } from "../ui";
 
 const isToday = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
 
 export default function AdminDashboard({ data }: { data: AdminData }) {
   const { cites, sources, tricycles, clients, commandes } = data;
   const [filtreCite, setFiltreCite] = useState("");
+  const [filtreSource, setFiltreSource] = useState<FiltreSource>("all");
 
   const citeNom = (id: string) => cites.find((c) => c.id === id)?.nom ?? "?";
   const citeOk = (citeId: string) => !filtreCite || citeId === filtreCite;
 
   const kpis = useMemo(() => {
-    const duJour = commandes.filter((c) => isToday(c.created_at));
+    const duJour = commandes.filter((c) => isToday(c.created_at) && c.status !== "ANNULEE");
     return {
       clients: clients.length,
       chauffeurs: tricycles.length,
@@ -39,25 +40,26 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
     }
 
     for (const c of commandes) {
-      if (c.status === "LIVRE" || c.lat == null || c.long == null || !citeOk(c.cite_id)) continue;
+      if (!COMMANDES_ACTIVES.includes(c.status) || c.lat == null || c.long == null || !citeOk(c.cite_id)) continue;
+      const route = c.status === "EN_COURS" || c.status === "ARRIVING";
       markers.push({
         id: `c-${c.id}`,
         lat: c.lat,
         lng: c.long,
-        kind: c.status === "EN_COURS" ? "commande-cours" : "commande",
+        kind: route ? "commande-cours" : "commande",
         title: `Lot ${c.lot_numero} · N°${c.position_file}`,
-        lines: [`${c.status === "EN_COURS" ? "en livraison" : "en attente"} · ${formatFcfa(c.prix)}`, citeNom(c.cite_id)],
+        lines: [`${COMMANDE_LABEL[c.status].toLowerCase()} · ${formatFcfa(c.prix)}`, citeNom(c.cite_id)],
       });
     }
 
-    // Les tricycles n'émettent pas de GPS : position ESTIMÉE
+    // Le GPS live n'est partagé qu'avec le client (pendant ARRIVING) : ici la
+    // position est ESTIMÉE
     //  - à la source quand il attend / est à la source
     //  - vers le lot en cours de livraison quand il est parti
     tricycles.forEach((t, i) => {
       const src = sources.find((s) => s.id === t.source_id);
-      const citeMatch = !filtreCite || t.cite_ids.includes(filtreCite);
-      if (!src || src.lat == null || src.long == null || !citeMatch) return;
-      const cible = commandes.find((c) => c.tricycle_id === t.id && c.status === "EN_COURS" && c.lat != null);
+      if (!src || src.lat == null || src.long == null || !citeOk(t.cite_id)) return;
+      const cible = commandes.find((c) => c.tricycle_id === t.id && (c.status === "EN_COURS" || c.status === "ARRIVING") && c.lat != null);
       const off = ((i % 5) - 2) * 0.00018;
       let lat = src.lat + 0.0002 + off;
       let lng = src.long + off;
@@ -72,9 +74,9 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
         id: `t-${t.id}`,
         lat,
         lng,
-        kind: t.status === "DISPO" ? "tricycle" : "tricycle-off",
+        kind: t.status === "ACTIVE" ? "tricycle" : "tricycle-off",
         title: t.nom,
-        lines: [t.status, t.statut !== "PAYE" ? t.statut : "", etat, "Position estimée"],
+        lines: [CHAUFFEUR_STATUS_LABEL[t.status], t.statut !== "PAYE" ? t.statut : "", etat, "Position estimée"],
       });
     });
 
@@ -82,7 +84,8 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources, tricycles, commandes, filtreCite]);
 
-  const recentes = commandes.filter((c) => citeOk(c.cite_id)).slice(0, 30);
+  const duFiltre = commandes.filter((c) => citeOk(c.cite_id));
+  const recentes = duFiltre.filter((c) => filtreSource === "all" || c.source === filtreSource).slice(0, 30);
   const tricycleNom = (id: string) => tricycles.find((t) => t.id === id)?.nom ?? "?";
   const clientNom = (id: string) => clients.find((c) => c.id === id)?.nom ?? "Client supprimé";
 
@@ -110,7 +113,7 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
         </div>
         <MapLazy height={440} markers={markers} lines={lines} fitKey={`${filtreCite}:${markers.length ? "ok" : "vide"}`} />
         <p className="mt-3 text-xs font-medium text-ink/55">
-          Bleu foncé : forage · Bleu : chauffeur DISPO (gris : OFF, position estimée) · Pin blanc : commande en attente · Pin bleu : en livraison.
+          Bleu foncé : forage · Bleu : chauffeur actif (gris : en pause / hors ligne, position estimée) · Pin blanc : commande en attente · Pin bleu : en livraison.
         </p>
       </section>
 
@@ -119,11 +122,11 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
           <h2 className="title-md mb-4">Chauffeurs</h2>
           <ul className="space-y-2">
             {tricycles
-              .filter((t) => !filtreCite || t.cite_ids.includes(filtreCite))
+              .filter((t) => citeOk(t.cite_id))
               .map((t) => {
                 const src = sources.find((s) => s.id === t.source_id);
-                const citesTxt = t.cite_ids.map(citeNom).join(", ");
-                const file = commandes.filter((c) => c.tricycle_id === t.id && c.status !== "LIVRE").length;
+                const citesTxt = citeNom(t.cite_id);
+                const file = commandes.filter((c) => c.tricycle_id === t.id && COMMANDES_ACTIVES.includes(c.status)).length;
                 return (
                   <li key={t.id} className="flex items-center justify-between gap-2 rounded-xl border-[1.5px] border-ink bg-white px-3 py-2.5">
                     <span className="min-w-0 truncate font-bold">
@@ -132,7 +135,7 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
                     </span>
                     <span className="flex shrink-0 items-center gap-1.5">
                       {file > 0 && <Badge tone="ink">{file} en file</Badge>}
-                      <Badge tone={t.status === "DISPO" ? "azur" : "gray"}>{t.status}</Badge>
+                      <Badge tone={t.status === "ACTIVE" ? "azur" : "gray"}>{CHAUFFEUR_STATUS_LABEL[t.status]}</Badge>
                     </span>
                   </li>
                 );
@@ -142,7 +145,15 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
         </section>
 
         <section className="brut p-5 sm:p-6">
-          <h2 className="title-md mb-4">Dernières commandes</h2>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="title-md">Dernières commandes</h2>
+            <SegmentedFilter
+              ariaLabel="Filtrer par origine"
+              value={filtreSource}
+              onChange={setFiltreSource}
+              options={FILTRES_SOURCE.map((f) => ({ ...f, count: f.id === "all" ? duFiltre.length : duFiltre.filter((c) => c.source === f.id).length }))}
+            />
+          </div>
           <ul className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
             <AnimatePresence initial={false}>
               {recentes.map((c) => (
@@ -166,11 +177,19 @@ function CommandeLine({ c, cite, chauffeur, client }: { c: Commande; cite: strin
         <span className="font-bold">
           Lot {c.lot_numero} · {formatFcfa(c.prix)} {c.lat != null && <span className="text-azur">· GPS</span>}
         </span>
-        <Badge tone={c.status === "LIVRE" ? "gray" : c.status === "EN_COURS" ? "azur" : "sky"}>{c.status.replace("_", " ")}</Badge>
+        <span className="flex shrink-0 items-center gap-1.5">
+          <SourceBadge source={c.source} />
+          <CommandeBadge status={c.status} />
+        </span>
       </div>
       <p className="text-sm text-ink/55">
         {cite} · {client} → {chauffeur} · {heure(c.created_at)}
       </p>
+      {c.source === "manual" && (
+        <p className="text-xs text-ink/55">
+          Ajouté par {chauffeur} à {heure(c.created_at)}
+        </p>
+      )}
     </>
   );
 }

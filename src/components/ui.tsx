@@ -3,7 +3,8 @@
 import { AnimatePresence, animate, motion, type HTMLMotionProps } from "framer-motion";
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { CompteStatut } from "@/lib/types";
+import { COMMANDE_LABEL } from "@/lib/format";
+import type { CommandeSource, CommandeStatus, CompteStatut } from "@/lib/types";
 import { Icon } from "./icons";
 
 // ─── Boutons ───────────────────────────────────────────────────────────────
@@ -106,6 +107,84 @@ export function StatutBadge({ statut }: { statut: CompteStatut }) {
       {statut === "BLOQUE" && <Icon name="lock" size={12} />}
       {STATUT_TEXT[statut]}
     </Badge>
+  );
+}
+
+const COMMANDE_TONE: Record<CommandeStatus, keyof typeof BADGE> = {
+  QUEUED: "gray",
+  ASSIGNED: "sky",
+  PROGRAMMED: "gray",
+  EN_COURS: "azur",
+  ARRIVING: "azur",
+  LIVREE: "ink",
+  ANNULEE: "danger",
+};
+
+/** Badge du statut d'une commande (admin, file chauffeur). */
+export function CommandeBadge({ status }: { status: CommandeStatus }) {
+  return <Badge tone={COMMANDE_TONE[status]}>{COMMANDE_LABEL[status]}</Badge>;
+}
+
+/** Origine d'une commande : APPLICATION (plein, point vert) ou MANUEL (contour, point orange). */
+export function SourceBadge({ source }: { source: CommandeSource }) {
+  const app = source === "app";
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider ${
+        app ? "border border-ink bg-ink text-white" : "border border-ink/25 bg-white text-ink/70"
+      }`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${app ? "bg-reprise" : "bg-pause"}`} aria-hidden />
+      {app ? "Application" : "Manuel"}
+    </span>
+  );
+}
+
+/** Filtre segmenté compact (ex. Tous | Application | Manuel). */
+export function SegmentedFilter<T extends string>({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { id: T; label: string; count?: number }[];
+  ariaLabel: string;
+}) {
+  return (
+    <div role="radiogroup" aria-label={ariaLabel} className="inline-flex rounded-xl border-[1.5px] border-ink/20 bg-white p-0.5">
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            onClick={() => onChange(o.id)}
+            className={`rounded-[10px] px-3 py-1.5 text-sm font-semibold transition-colors ${on ? "bg-ink text-white" : "text-ink/60 hover:text-ink"}`}
+          >
+            {o.label}
+            {o.count != null && <span className={`ml-1.5 tabular-nums ${on ? "text-white/70" : "text-ink/40"}`}>{o.count}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Cité fixée à l'inscription : badge grisé, cadenas, non cliquable. */
+export function CiteBadge({ children }: { children: ReactNode }) {
+  return (
+    <span
+      aria-readonly="true"
+      title="Fixée à l'inscription, non modifiable"
+      className="inline-flex cursor-default select-none items-center gap-1.5 rounded-full border-[1.5px] border-steel bg-steel/40 px-3 py-1 text-sm font-semibold text-ink/65"
+    >
+      <Icon name="lock" size={13} />
+      {children}
+    </span>
   );
 }
 
@@ -315,6 +394,36 @@ export function Toggle({
         {hint && <span className="block text-xs font-medium text-ink/55">{hint}</span>}
       </span>
     </button>
+  );
+}
+
+/** Téléphone ivoirien : chiffres uniquement, 10 au maximum (lettres, espaces, +
+ *  et tirets sont ignorés à la frappe comme au collage). */
+export function PhoneInput({
+  value,
+  onChange,
+  autoComplete = "tel",
+  invalid,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  autoComplete?: string;
+  invalid?: boolean;
+}) {
+  return (
+    <input
+      className="field"
+      type="tel"
+      inputMode="numeric"
+      pattern="[0-9]{10}"
+      maxLength={10}
+      autoComplete={autoComplete}
+      placeholder="0700000000"
+      value={value}
+      onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 10))}
+      aria-invalid={invalid || undefined}
+      required
+    />
   );
 }
 

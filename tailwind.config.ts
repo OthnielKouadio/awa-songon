@@ -12,6 +12,8 @@ const config: Config = {
         mist: "#EDF6FF", // fond cartes
         steel: "#C9D5E3", // état OFF
         danger: "#D6404A", // erreurs uniquement
+        pause: "#F28C28", // bouton PAUSE chauffeur (orange)
+        reprise: "#1FA35B", // bouton REPRENDRE chauffeur (vert)
       },
       fontFamily: {
         display: ['"Clash Display"', "var(--font-sora)", "Sora", "system-ui", "sans-serif"],

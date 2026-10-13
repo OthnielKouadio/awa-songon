@@ -1,6 +1,32 @@
 -- ============================================================================
---  AWA SONGON — schéma Supabase v4 (à coller dans SQL Editor puis "Run")
+--  AWA SONGON — schéma Supabase v6 (à coller dans SQL Editor puis "Run")
 --  Idempotent : peut être relancé sans casser les données.
+--
+--  v7 (sécurité) : plus AUCUN mot de passe admin par défaut (l'ancien admin
+--  par défaut est désactivé s'il n'a jamais été changé — voir admin_definir),
+--  secrets hachés en bcrypt (pgcrypto, migration transparente au prochain
+--  login), téléphones normalisés en 0XXXXXXXXX (+225 / 00225 / 225 retirés)
+--  avec fusion des doublons existants et colonne phone_normalized UNIQUE,
+--  settings.depot_phone (numéro de dépôt Wave modifiable par l'admin),
+--  session_valide() pour le middleware Next.js, aucun droit direct sur les
+--  tables sensibles pour anon/authenticated.
+--
+--  v8 (accès) : l'admin se connecte par EMAIL + mot de passe, uniquement sur
+--  sa page secrète (auth_admin_login) — auth_login ne connecte plus jamais
+--  l'admin. auth_login('auto', …) reconnaît seul un client ou un chauffeur
+--  (page /login sans choix de rôle).
+--
+--  v6 : saisie directe par le chauffeur (commandes.source, clients temporaires,
+--  journal_actions), livraison aujourd'hui/demain (scheduled_for, cron 00h00,
+--  annulation fermée à 18h la veille), période d'essai (settings.trial_ends_at)
+--  et journalisation de la facturation à chaque livraison. Statistiques :
+--  get_yearly_stats, commandes.livree_at, points_transactions.commande_id.
+--
+--  v5 : une seule cité par chauffeur (tricycles.cite_id, verrouillage côté
+--  serveur), statuts chauffeur ACTIVE/PAUSED/OFFLINE (il ne refuse jamais :
+--  commandes QUEUED / PROGRAMMED), GPS live uniquement après « J'arrive chez
+--  toi » (positions_live + diffusion directe au seul client concerné), crons
+--  pg_cron (23h59 / 8h00 / purge GPS). Migre automatiquement une base v4.
 --
 --  v4 : authentification unifiée (client / chauffeur / admin) par téléphone +
 --  code, SANS Supabase Auth — un jeton de session (comme avant pour les
@@ -9,6 +35,9 @@
 --  géré uniquement par l'admin. ⚠ Si tu viens d'une version antérieure à la v4
 --  (Supabase Auth pour l'admin), repars d'un projet vide : le modèle change trop.
 -- ============================================================================
+
+create schema if not exists extensions;
+create extension if not exists pgcrypto with schema extensions;
 
 -- ─── Tables ────────────────────────────────────────────────────────────────
 
@@ -33,12 +62,17 @@ create table if not exists public.tricycles (
   id         uuid primary key default gen_random_uuid(),
   nom        text not null,
   telephone  text not null unique,
+  -- UNE seule cité, fixée à l'inscription : c'est elle qui décide quels
+  -- clients le voient et peuvent le commander (verrouillage par cité).
+  cite_id    uuid references public.cites(id) on delete cascade,
   -- La source précise (le forage) est facultative : un chauffeur qui n'en
-  -- choisit pas puise "un peu partout" — pas de raison de le bloquer. Les
-  -- cités où il est visible des clients sont dans tricycle_cites ci-dessous
-  -- (plusieurs-à-plusieurs : un chauffeur peut livrer plusieurs cités).
+  -- choisit pas puise "un peu partout" dans sa cité.
   source_id  uuid references public.sources(id) on delete cascade,
-  status     text not null default 'OFF'         check (status in ('DISPO', 'OFF')),
+  -- ACTIVE : livre normalement · PAUSED : au garage / mange, les nouvelles
+  -- commandes partent en QUEUED (livrées aujourd'hui) · OFFLINE : dort, les
+  -- nouvelles commandes partent en PROGRAMMED (demain 8h). Dans les 3 cas il
+  -- reste visible et commandable : il ne refuse jamais.
+  status     text not null default 'OFFLINE',
   etat       text not null default 'A_LA_SOURCE' check (etat in ('A_LA_SOURCE', 'EN_ROUTE')),
   -- Prix (FCFA) que le chauffeur fixe lui-même pour 1000 L.
   prix_1000  int  not null default 2500 check (prix_1000 between 100 and 50000),
@@ -51,21 +85,13 @@ create table if not exists public.tricycles (
   solde_points          int not null default 2500,
   total_points_utilises int not null default 0,
   is_offline            boolean not null default false,
-  -- Position GPS live (watchPosition côté chauffeur, envoyée toutes les 5s via
-  -- chauffeur_set_position) — distincte de sources.lat/long (le forage, fixe)
-  -- et de commandes.lat/long (le lot du client). position_maj sert à juger la
-  -- fraîcheur côté client (au-delà de ~2 min, on ne l'affiche plus).
-  lat            double precision,
-  long           double precision,
-  position_maj   timestamptz,
   -- Le PIN est CHOISI PAR LE CHAUFFEUR à l'inscription. Stocké haché ; la session
   -- utilise ensuite un jeton aléatoire (haché aussi) — le PIN ne circule qu'au login.
   pin_hash          text not null,
   session_hash      text,
   pin_essais        int not null default 0,
   pin_bloque_jusqua timestamptz,
-  created_at        timestamptz not null default now(),
-  constraint tricycles_gps_pair check ((lat is null) = (long is null))
+  created_at        timestamptz not null default now()
 );
 
 -- Migration (sans effet sur une base neuve, où les colonnes existent déjà
@@ -73,9 +99,22 @@ create table if not exists public.tricycles (
 alter table public.tricycles add column if not exists solde_points          int not null default 2500;
 alter table public.tricycles add column if not exists total_points_utilises int not null default 0;
 alter table public.tricycles add column if not exists is_offline            boolean not null default false;
-alter table public.tricycles add column if not exists lat                   double precision;
-alter table public.tricycles add column if not exists long                  double precision;
-alter table public.tricycles add column if not exists position_maj          timestamptz;
+alter table public.tricycles add column if not exists cite_id               uuid references public.cites(id) on delete cascade;
+
+-- Migration : la position GPS ne vit plus sur tricycles (elle déclenchait un
+-- ping temps réel vers toute la cité toutes les 5 s). Elle passe dans
+-- positions_live (dernière position, 5 min max) + positions_historique.
+alter table public.tricycles drop constraint if exists tricycles_gps_pair;
+alter table public.tricycles drop column if exists lat;
+alter table public.tricycles drop column if exists long;
+alter table public.tricycles drop column if exists position_maj;
+
+-- Migration : statut DISPO/OFF → ACTIVE/PAUSED/OFFLINE.
+alter table public.tricycles drop constraint if exists tricycles_status_check;
+update public.tricycles set status = 'ACTIVE'  where status = 'DISPO';
+update public.tricycles set status = 'OFFLINE' where status = 'OFF';
+alter table public.tricycles alter column status set default 'OFFLINE';
+alter table public.tricycles add constraint tricycles_status_check check (status in ('ACTIVE', 'PAUSED', 'OFFLINE'));
 
 -- Historique des recharges/déductions de points (chauffeurs ET clients depuis
 -- le passage au système 100% recharge) — utilisé uniquement pour la
@@ -86,24 +125,18 @@ create table if not exists public.points_transactions (
   id          uuid primary key default gen_random_uuid(),
   tricycle_id uuid references public.tricycles(id) on delete cascade,
   montant     int  not null,
-  type        text not null check (type in ('RECHARGE', 'DEDUCTION', 'BONUS_FIDELITE')),
+  type        text not null,
   created_at  timestamptz not null default now()
 );
 create index if not exists points_transactions_tricycle_idx on public.points_transactions (tricycle_id);
+-- REMBOURSEMENT : points rendus quand le client annule sa commande.
+alter table public.points_transactions drop constraint if exists points_transactions_type_check;
+alter table public.points_transactions add constraint points_transactions_type_check
+  check (type in ('RECHARGE', 'DEDUCTION', 'BONUS_FIDELITE', 'REMBOURSEMENT'));
 -- Migration : la colonne tricycle_id était NOT NULL avant que les clients
 -- aient aussi des points — on la rend facultative (client_id la remplace
 -- alors, colonne ajoutée juste après la table clients ci-dessous).
 alter table public.points_transactions alter column tricycle_id drop not null;
-
--- Plusieurs-à-plusieurs : un chauffeur peut couvrir (et être vu par) plusieurs
--- cités en même temps, pas une seule.
-create table if not exists public.tricycle_cites (
-  tricycle_id uuid not null references public.tricycles(id) on delete cascade,
-  cite_id     uuid not null references public.cites(id) on delete cascade,
-  primary key (tricycle_id, cite_id)
-);
-create index if not exists tricycle_cites_cite_idx     on public.tricycle_cites (cite_id);
-create index if not exists tricycle_cites_tricycle_idx on public.tricycle_cites (tricycle_id);
 
 create table if not exists public.clients (
   id         uuid primary key default gen_random_uuid(),
@@ -132,6 +165,9 @@ create table if not exists public.clients (
 -- Migration (sans effet sur une base neuve, où la colonne existe déjà ci-dessus) :
 -- les clients déjà inscrits reçoivent aussi le solde de départ.
 alter table public.clients add column if not exists solde_points int not null default 1200;
+-- Client créé par un chauffeur lors d'une saisie directe : sans PIN utilisable,
+-- il devient un compte normal s'il s'inscrit ensuite avec le même numéro.
+alter table public.clients add column if not exists is_temporary boolean not null default false;
 
 -- points_transactions peut maintenant référencer un client (la table clients
 -- vient d'être définie) ; exactement un des deux titulaires doit être rempli.
@@ -143,33 +179,44 @@ exception when duplicate_object then null;
 end $$;
 create index if not exists points_transactions_client_idx on public.points_transactions (client_id);
 
--- Migration : la source du chauffeur devient facultative, et sa cité (unique)
--- devient plusieurs cités possibles (tricycle_cites). Sur une base existante,
--- on reprend sa cité actuelle (déduite de son ancienne source obligatoire) dans
--- tricycle_cites une seule fois, pour ne perdre aucune donnée ni écraser un
--- choix déjà fait depuis l'appli (n'insère que si la table est encore vide).
+-- Migration : un chauffeur n'a plus qu'UNE cité (tricycles.cite_id). L'ancienne
+-- table plusieurs-à-plusieurs tricycle_cites est reprise une dernière fois
+-- (on garde la première cité par ordre alphabétique), puis supprimée. À défaut,
+-- on prend la cité de sa source.
 alter table public.tricycles alter column source_id drop not null;
 do $$ begin
-  if not exists (select 1 from public.tricycle_cites) then
-    insert into public.tricycle_cites (tricycle_id, cite_id)
-    select t.id, s.cite_id
-    from public.tricycles t
-    join public.sources s on s.id = t.source_id
-    where t.source_id is not null;
+  if to_regclass('public.tricycle_cites') is not null then
+    update public.tricycles t
+       set cite_id = (select tc.cite_id from public.tricycle_cites tc join public.cites c on c.id = tc.cite_id
+                       where tc.tricycle_id = t.id order by c.nom limit 1)
+     where t.cite_id is null;
   end if;
 end $$;
+update public.tricycles t set cite_id = s.cite_id from public.sources s where s.id = t.source_id and t.cite_id is null;
+drop table if exists public.tricycle_cites cascade;
+-- La source (facultative) doit appartenir à SA cité.
+update public.tricycles t set source_id = null
+ where t.source_id is not null and not exists (select 1 from public.sources s where s.id = t.source_id and s.cite_id = t.cite_id);
+alter table public.tricycles alter column cite_id set not null;
+create index if not exists tricycles_cite_idx on public.tricycles (cite_id);
 
 -- Un seul enregistrement en pratique, mais une table plutôt qu'un singleton codé
 -- en dur : ça permet plusieurs comptes admin plus tard sans migration.
 create table if not exists public.admins (
   id        uuid primary key default gen_random_uuid(),
-  telephone text not null unique,
+  telephone text unique,
   password_hash     text not null,
   session_hash      text,
   essais            int not null default 0,
   bloque_jusqua     timestamptz,
   created_at        timestamptz not null default now()
 );
+-- v8 : identifiant admin = email (en minuscules). Le téléphone devient facultatif
+-- (anciens comptes) : un admin sans email ne peut plus se connecter, le
+-- recréer avec admin_definir('email', 'mot de passe').
+alter table public.admins add column if not exists email text;
+alter table public.admins alter column telephone drop not null;
+create unique index if not exists admins_email_key on public.admins (email);
 
 create table if not exists public.commandes (
   id            uuid primary key default gen_random_uuid(),
@@ -178,14 +225,107 @@ create table if not exists public.commandes (
   cite_id       uuid not null references public.cites(id) on delete cascade,
   lot_numero    text not null,
   position_file int  not null,
-  status        text not null default 'EN_ATTENTE' check (status in ('EN_ATTENTE', 'EN_COURS', 'LIVRE')),
+  -- Cycle de vie (voir creer_commande / chauffeur_set_status) :
+  --   QUEUED      chauffeur en PAUSE : livrée aujourd'hui, dès qu'il reprend
+  --   PROGRAMMED  chauffeur OFFLINE (ou QUEUED non livrée à 23h59) : demain 8h
+  --   ASSIGNED    dans la file active du chauffeur
+  --   EN_COURS    il est parti livrer
+  --   ARRIVING    « J'arrive chez toi » : GPS live partagé avec le client (10 min max)
+  --   LIVREE / ANNULEE
+  status        text not null default 'ASSIGNED',
   -- Prix figé à la commande (FCFA) : si le chauffeur change son tarif ensuite, ça ne bouge pas.
   prix          int  not null,
   lat           double precision,
   long          double precision,
+  -- PROGRAMMED : date/heure de livraison prévue (prochain 8h00, heure d'Abidjan).
+  programmee_pour timestamptz,
+  -- ARRIVING : début du partage GPS (coupé automatiquement 10 min après).
+  arriving_at   timestamptz,
+  -- Jour de livraison prévu (heure d'Abidjan) : aujourd'hui ou demain, jamais au-delà.
+  scheduled_for date not null default ((now() at time zone 'Africa/Abidjan')::date),
+  -- Commande programmée pour un jour suivant : plus annulable après 18h la veille.
+  annulable_jusqua timestamptz,
+  -- 'app' : passée par le client · 'manual' : saisie par le chauffeur (appel, passage).
+  source        text not null default 'app' check (source in ('app', 'manual')),
+  added_by_driver_id  uuid references public.tricycles(id) on delete set null,
+  is_temporary_client boolean not null default false,
+  quantite_bidons int check (quantite_bidons between 1 and 200),
+  note          text check (length(note) <= 280),
   created_at    timestamptz not null default now(),
   constraint commandes_gps_pair check ((lat is null) = (long is null))
 );
+
+alter table public.commandes add column if not exists programmee_pour timestamptz;
+alter table public.commandes add column if not exists arriving_at     timestamptz;
+alter table public.commandes add column if not exists scheduled_for   date;
+alter table public.commandes add column if not exists annulable_jusqua timestamptz;
+alter table public.commandes add column if not exists source          text not null default 'app' check (source in ('app', 'manual'));
+alter table public.commandes add column if not exists added_by_driver_id  uuid references public.tricycles(id) on delete set null;
+alter table public.commandes add column if not exists is_temporary_client boolean not null default false;
+alter table public.commandes add column if not exists quantite_bidons int check (quantite_bidons between 1 and 200);
+alter table public.commandes add column if not exists note            text check (length(note) <= 280);
+-- Heure de livraison effective (temps moyen de livraison, statistiques).
+alter table public.commandes add column if not exists livree_at timestamptz;
+-- Remboursement rattaché à la commande annulée (statistiques filtrables par zone / chauffeur).
+alter table public.points_transactions add column if not exists commande_id uuid references public.commandes(id) on delete set null;
+update public.commandes set scheduled_for = (coalesce(programmee_pour, created_at) at time zone 'Africa/Abidjan')::date
+ where scheduled_for is null;
+alter table public.commandes alter column scheduled_for set default ((now() at time zone 'Africa/Abidjan')::date);
+alter table public.commandes alter column scheduled_for set not null;
+
+-- Migration : EN_ATTENTE → ASSIGNED, LIVRE → LIVREE (+ nouveaux statuts).
+alter table public.commandes drop constraint if exists commandes_status_check;
+update public.commandes set status = 'ASSIGNED' where status = 'EN_ATTENTE';
+update public.commandes set status = 'LIVREE'   where status = 'LIVRE';
+alter table public.commandes alter column status set default 'ASSIGNED';
+alter table public.commandes add constraint commandes_status_check
+  check (status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'ARRIVING', 'EN_COURS', 'LIVREE', 'ANNULEE'));
+
+-- ─── Positions GPS (uniquement pendant ARRIVING) ───────────────────────────
+-- positions_live joue le rôle d'un cache type Redis : UNE ligne par tricycle,
+-- écrasée à chaque envoi, ignorée au-delà de 5 min (TTL) et purgée par cron.
+-- UNLOGGED : pas de WAL, écriture rapide — on accepte de la perdre en cas de
+-- crash, ce n'est qu'une position temporaire.
+create unlogged table if not exists public.positions_live (
+  tricycle_id uuid primary key references public.tricycles(id) on delete cascade,
+  commande_id uuid not null references public.commandes(id) on delete cascade,
+  lat         double precision not null,
+  long        double precision not null,
+  maj         timestamptz not null default now()
+);
+
+-- Historique : au plus 1 point toutes les 2 min par commande.
+create table if not exists public.positions_historique (
+  id          uuid primary key default gen_random_uuid(),
+  commande_id uuid not null references public.commandes(id) on delete cascade,
+  tricycle_id uuid not null references public.tricycles(id) on delete cascade,
+  lat         double precision not null,
+  long        double precision not null,
+  created_at  timestamptz not null default now()
+);
+create index if not exists positions_historique_commande_idx on public.positions_historique (commande_id, created_at desc);
+
+-- Journal des actions (saisies manuelles, facturation…) : traçabilité interne.
+create table if not exists public.journal_actions (
+  id          uuid primary key default gen_random_uuid(),
+  action      text not null,
+  acteur_type text not null check (acteur_type in ('chauffeur', 'client', 'admin', 'systeme')),
+  acteur_id   uuid,
+  details     jsonb not null default '{}'::jsonb,
+  created_at  timestamptz not null default now()
+);
+create index if not exists journal_actions_action_idx on public.journal_actions (action, created_at desc);
+
+-- Paramètres globaux : une seule ligne.
+create table if not exists public.settings (
+  id            boolean primary key default true check (id),
+  trial_ends_at date not null default '2026-12-31',
+  updated_at    timestamptz not null default now()
+);
+insert into public.settings (id) values (true) on conflict (id) do nothing;
+-- Numéro de dépôt Wave (forme canonique 0XXXXXXXXX), modifiable dans
+-- Admin → Paramètres (admin_set_depot_phone). Seule source pour l'affichage.
+alter table public.settings add column if not exists depot_phone text not null default '0789855418';
 
 create index if not exists commandes_tricycle_status_idx on public.commandes (tricycle_id, status);
 create index if not exists commandes_client_status_idx   on public.commandes (client_id, status);
@@ -197,15 +337,27 @@ create index if not exists sources_cite_idx              on public.sources (cite
 
 -- ─── Normalisation des téléphones ──────────────────────────────────────────
 
+-- Forme canonique UNIQUE : 0789855418 = +225789855418 = 00225789855418 =
+-- +2250789855418 = "07 89 85 54 18". ⚠ Identique à normalizePhone() dans
+-- src/lib/phone.ts. Le 0 initial n'est rajouté qu'à un numéro de 9 chiffres :
+-- les fixes (21, 25, 27…) font déjà 10 chiffres sans commencer par 0.
 create or replace function public.normalize_phone(p text)
-returns text language sql immutable as $$
-  select regexp_replace(coalesce(p, ''), '[^0-9+]', '', 'g')
-$$;
+returns text language plpgsql immutable as $$
+declare n text := regexp_replace(coalesce(p, ''), '[^0-9+]', '', 'g');
+begin
+  if n like '+225%' then n := substr(n, 5);
+  elsif n like '00225%' then n := substr(n, 6);
+  elsif n like '225%' and length(n) > 10 then n := substr(n, 4);
+  end if;
+  n := replace(n, '+', '');
+  if length(n) = 9 and left(n, 1) <> '0' then n := '0' || n; end if;
+  return n;
+end $$;
 
 create or replace function public.trg_normalize_phone()
 returns trigger language plpgsql as $$
 begin
-  new.telephone := public.normalize_phone(new.telephone);
+  if new.telephone is not null then new.telephone := public.normalize_phone(new.telephone); end if;
   return new;
 end $$;
 
@@ -221,6 +373,80 @@ drop trigger if exists admins_normalize_phone on public.admins;
 create trigger admins_normalize_phone before insert or update on public.admins
   for each row execute function public.trg_normalize_phone();
 
+-- Migration v7 : fusion des comptes en double (même numéro écrit 07… / +225…).
+-- On garde le compte réel le plus ancien, on lui rattache commandes, points et
+-- historique, et on additionne les soldes (aucun point payé n'est perdu ; le
+-- détail est dans journal_actions 'FUSION_DOUBLON_TELEPHONE' pour correction
+-- éventuelle). Sans effet quand il n'y a pas de doublon : relançable.
+do $$
+declare
+  g record;
+  v_keep uuid;
+  v_autres uuid[];
+begin
+  for g in
+    select public.normalize_phone(telephone) as tel, array_agg(id order by is_temporary, created_at) as ids
+      from public.clients group by 1 having count(*) > 1
+  loop
+    v_keep := g.ids[1];
+    v_autres := g.ids[2:];
+    insert into public.journal_actions (action, acteur_type, details)
+    select 'FUSION_DOUBLON_TELEPHONE', 'systeme',
+           jsonb_build_object('table', 'clients', 'telephone', g.tel, 'conserve', v_keep,
+                              'comptes', jsonb_agg(jsonb_build_object('id', id, 'telephone', telephone, 'solde_points', solde_points, 'is_temporary', is_temporary)))
+      from public.clients where id = any(g.ids);
+    update public.commandes set client_id = v_keep where client_id = any(v_autres);
+    update public.points_transactions set client_id = v_keep where client_id = any(v_autres);
+    update public.clients k set solde_points = s.total
+      from (select sum(solde_points)::int as total from public.clients where id = any(g.ids)) s
+     where k.id = v_keep;
+    delete from public.clients where id = any(v_autres);
+  end loop;
+
+  for g in
+    select public.normalize_phone(telephone) as tel, array_agg(id order by created_at) as ids
+      from public.tricycles group by 1 having count(*) > 1
+  loop
+    v_keep := g.ids[1];
+    v_autres := g.ids[2:];
+    insert into public.journal_actions (action, acteur_type, details)
+    select 'FUSION_DOUBLON_TELEPHONE', 'systeme',
+           jsonb_build_object('table', 'tricycles', 'telephone', g.tel, 'conserve', v_keep,
+                              'comptes', jsonb_agg(jsonb_build_object('id', id, 'telephone', telephone, 'solde_points', solde_points)))
+      from public.tricycles where id = any(g.ids);
+    delete from public.positions_live where tricycle_id = any(v_autres);
+    update public.commandes set tricycle_id = v_keep where tricycle_id = any(v_autres);
+    update public.commandes set added_by_driver_id = v_keep where added_by_driver_id = any(v_autres);
+    update public.points_transactions set tricycle_id = v_keep where tricycle_id = any(v_autres);
+    update public.positions_historique set tricycle_id = v_keep where tricycle_id = any(v_autres);
+    update public.tricycles k set solde_points = s.sp, total_points_utilises = s.tpu
+      from (select sum(solde_points)::int as sp, sum(total_points_utilises)::int as tpu from public.tricycles where id = any(g.ids)) s
+     where k.id = v_keep;
+    -- Les deux files fusionnées : renumérotation continue 1, 2, 3…
+    update public.commandes c set position_file = r.rn
+      from (select id, row_number() over (order by position_file, created_at)::int as rn
+              from public.commandes where tricycle_id = v_keep and position_file > 0) r
+     where c.id = r.id;
+    delete from public.tricycles where id = any(v_autres);
+  end loop;
+
+  delete from public.admins a
+   where exists (select 1 from public.admins b
+                  where public.normalize_phone(b.telephone) = public.normalize_phone(a.telephone)
+                    and (b.created_at, b.id) < (a.created_at, a.id));
+
+  update public.clients   set telephone = public.normalize_phone(telephone) where telephone <> public.normalize_phone(telephone);
+  update public.tricycles set telephone = public.normalize_phone(telephone) where telephone <> public.normalize_phone(telephone);
+  update public.admins    set telephone = public.normalize_phone(telephone) where telephone <> public.normalize_phone(telephone);
+end $$;
+
+-- Garde-fou en base : deux écritures d'un même numéro ne peuvent plus coexister,
+-- même si un futur code oubliait de normaliser.
+alter table public.clients   add column if not exists phone_normalized text generated always as (public.normalize_phone(telephone)) stored;
+alter table public.tricycles add column if not exists phone_normalized text generated always as (public.normalize_phone(telephone)) stored;
+create unique index if not exists clients_phone_normalized_key   on public.clients (phone_normalized);
+create unique index if not exists tricycles_phone_normalized_key on public.tricycles (phone_normalized);
+
 -- ─── Row Level Security ────────────────────────────────────────────────────
 -- cites / sources : lecture publique (nécessaire pour les selects d'inscription).
 -- tricycles / clients / commandes / admins : AUCUN accès direct, même authentifié —
@@ -230,8 +456,11 @@ create trigger admins_normalize_phone before insert or update on public.admins
 alter table public.cites               enable row level security;
 alter table public.sources             enable row level security;
 alter table public.tricycles           enable row level security;
-alter table public.tricycle_cites      enable row level security;
 alter table public.points_transactions enable row level security;
+alter table public.positions_live      enable row level security;
+alter table public.positions_historique enable row level security;
+alter table public.journal_actions     enable row level security;
+alter table public.settings            enable row level security;
 alter table public.clients             enable row level security;
 alter table public.commandes           enable row level security;
 alter table public.admins              enable row level security;
@@ -240,16 +469,30 @@ drop policy if exists "cites lecture publique"   on public.cites;
 drop policy if exists "sources lecture publique" on public.sources;
 create policy "cites lecture publique"   on public.cites   for select using (true);
 create policy "sources lecture publique" on public.sources for select using (true);
--- (aucune policy sur tricycles/tricycle_cites/points_transactions/clients/commandes/admins : accès refusé par défaut)
+-- (aucune policy sur tricycles/points_transactions/positions_*/clients/commandes/admins : accès refusé par défaut)
+--
+-- Équivalent des règles « chauffeur : uniquement ses lignes / admin : tout /
+-- anon : rien » sans Supabase Auth : aucun rôle API ne touche ces tables ; les
+-- RPC ci-dessous identifient l'appelant par son jeton (_auth_tricycle,
+-- _auth_client, _auth_admin) et filtrent sur SON id (where tricycle_id = v…).
+-- En plus de RLS, on retire les droits SQL eux-mêmes (défense en profondeur :
+-- une policy ajoutée par erreur ne suffirait pas à ouvrir l'accès).
+revoke all on public.tricycles, public.clients, public.commandes, public.admins, public.settings,
+              public.points_transactions, public.positions_live, public.positions_historique,
+              public.journal_actions
+  from anon, authenticated;
+revoke insert, update, delete, truncate on public.cites, public.sources from anon, authenticated;
 
 -- ─── Temps réel (ping + refetch, sans dépendre de RLS/postgres_changes) ────
 -- Les canaux broadcast ne transportent aucune donnée : le client recharge
 -- ensuite via une RPC. cite:<id> et tricycle:<id> pour client/chauffeur,
 -- client:<id> pour le suivi de commande, "admin" pour le cockpit.
+-- Exception : la position GPS live part directement (avec ses coordonnées) sur
+-- suivi:<commande_id>, que seul le client de cette commande écoute — voir
+-- chauffeur_set_position. Elle ne touche aucune table surveillée ici.
 
 do $$ begin alter publication supabase_realtime add table public.commandes;      exception when others then null; end $$;
 do $$ begin alter publication supabase_realtime add table public.tricycles;      exception when others then null; end $$;
-do $$ begin alter publication supabase_realtime add table public.tricycle_cites; exception when others then null; end $$;
 do $$ begin alter publication supabase_realtime add table public.clients;        exception when others then null; end $$;
 do $$ begin alter publication supabase_realtime add table public.sources;        exception when others then null; end $$;
 do $$ begin alter publication supabase_realtime add table public.cites;          exception when others then null; end $$;
@@ -261,7 +504,6 @@ declare
   v_tricycle uuid;
   v_client   uuid;
   v_cite     uuid;
-  v_cite_id  uuid;
 begin
   if tg_table_name = 'commandes' then
     v_tricycle := (j ->> 'tricycle_id')::uuid;
@@ -269,23 +511,13 @@ begin
     v_cite     := (j ->> 'cite_id')::uuid;
   elsif tg_table_name = 'tricycles' then
     v_tricycle := (j ->> 'id')::uuid;
-  elsif tg_table_name = 'tricycle_cites' then
-    -- Un chauffeur peut couvrir plusieurs cités : ajout/retrait d'une cité ne
-    -- notifie QUE cette cité-là (le tricycle-level ping ci-dessous couvre déjà
-    -- toutes ses cités actuelles pour les modifs prix/statut/etat).
-    v_tricycle := (j ->> 'tricycle_id')::uuid;
-    v_cite     := (j ->> 'cite_id')::uuid;
+    v_cite     := (j ->> 'cite_id')::uuid; -- une seule cité par chauffeur
   elsif tg_table_name = 'clients' then
     v_client := (j ->> 'id')::uuid;
   end if;
 
   begin
-    if v_tricycle is not null then
-      perform realtime.send(jsonb_build_object('at', now()), 'changed', 'tricycle:' || v_tricycle, false);
-      for v_cite_id in select cite_id from public.tricycle_cites where tricycle_id = v_tricycle loop
-        perform realtime.send(jsonb_build_object('at', now()), 'changed', 'cite:' || v_cite_id, false);
-      end loop;
-    end if;
+    if v_tricycle is not null then perform realtime.send(jsonb_build_object('at', now()), 'changed', 'tricycle:' || v_tricycle, false); end if;
     if v_client   is not null then perform realtime.send(jsonb_build_object('at', now()), 'changed', 'client:'   || v_client,   false); end if;
     if v_cite     is not null then perform realtime.send(jsonb_build_object('at', now()), 'changed', 'cite:'     || v_cite,     false); end if;
     perform realtime.send(jsonb_build_object('at', now()), 'changed', 'admin', false);
@@ -300,9 +532,6 @@ create trigger commandes_notify after insert or update or delete on public.comma
   for each row execute function public.notify_change();
 drop trigger if exists tricycles_notify on public.tricycles;
 create trigger tricycles_notify after insert or update or delete on public.tricycles
-  for each row execute function public.notify_change();
-drop trigger if exists tricycle_cites_notify on public.tricycle_cites;
-create trigger tricycle_cites_notify after insert or update or delete on public.tricycle_cites
   for each row execute function public.notify_change();
 drop trigger if exists clients_notify on public.clients;
 create trigger clients_notify after insert or update or delete on public.clients
@@ -322,6 +551,23 @@ returns text language sql immutable as $$
   select encode(sha256(convert_to(coalesce(p, ''), 'UTF8')), 'hex')
 $$;
 
+-- v7 : bcrypt (pgcrypto). Les anciens hachages SHA-256 (_hash_secret) restent
+-- acceptés une dernière fois puis sont remplacés au login réussi (_secret_ok +
+-- auth_login) : aucune réinitialisation de PIN ni de mot de passe à prévoir.
+create or replace function public._hash_pin(p_secret text)
+returns text language sql volatile as $$
+  select extensions.crypt(coalesce(p_secret, ''), extensions.gen_salt('bf', 10))
+$$;
+
+create or replace function public._secret_ok(p_id uuid, p_secret text, p_hash text)
+returns boolean language sql stable as $$
+  select case
+    when p_hash is null or p_hash like '!%' then false           -- compte sans secret utilisable
+    when p_hash like '$2%' then extensions.crypt(coalesce(p_secret, ''), p_hash) = p_hash
+    else p_hash = public._hash_secret(p_id, p_secret)              -- ancien format
+  end
+$$;
+
 create or replace function public._new_token()
 returns text language sql volatile as $$
   select replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '')
@@ -333,10 +579,9 @@ returns jsonb language sql stable security definer set search_path = public as $
     'id', t.id, 'nom', t.nom, 'telephone', t.telephone, 'status', t.status, 'etat', t.etat,
     'prix_1000', t.prix_1000, 'statut', t.statut, 'source_nom', s.nom,
     'solde_points', t.solde_points, 'total_points_utilises', t.total_points_utilises, 'is_offline', t.is_offline,
-    'cites', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'nom', c.nom) order by c.nom)
-                        from public.tricycle_cites tc join public.cites c on c.id = tc.cite_id
-                        where tc.tricycle_id = t.id), '[]'::jsonb))
+    'cite_id', ci.id, 'cite_nom', ci.nom)
   from public.tricycles t
+  join public.cites ci on ci.id = t.cite_id
   left join public.sources s on s.id = t.source_id
   where t.id = p_id
 $$;
@@ -376,90 +621,131 @@ create or replace function public._auth_admin(p_tel text, p_token text)
 returns uuid language plpgsql stable security definer set search_path = public as $$
 declare v uuid;
 begin
+  -- p_tel porte l'email de l'admin (même champ « identifiant » que les autres rôles).
   select a.id into v from public.admins a
-   where a.telephone = public.normalize_phone(p_tel) and a.session_hash is not null and a.session_hash = public._hash_token(p_token);
+   where a.email = lower(btrim(p_tel)) and a.session_hash is not null and a.session_hash = public._hash_token(p_token);
   if v is null then raise exception 'REFUSE'; end if;
   return v;
 end $$;
 
--- Admin par défaut (idempotent) : téléphone 0566036825, mot de passe admin123.
--- ⚠ Change ce mot de passe dès la première connexion (Admin → Sécurité).
--- L'id est fixé une seule fois dans le CTE et réutilisé pour le hash : le hash
--- doit porter sur le MÊME id que celui réellement inséré (le sel du hachage).
-with new_admin as (select gen_random_uuid() as id)
-insert into public.admins (id, telephone, password_hash)
-select id, '0566036825', public._hash_secret(id, 'admin123') from new_admin
-where not exists (select 1 from public.admins);
+-- Aucun admin par défaut. Création / réinitialisation, depuis le SQL Editor
+-- de Supabase UNIQUEMENT (fonction interdite à l'API) :
+--   select public.admin_definir('toi@exemple.com', 'un-mot-de-passe-long');
+-- Le mot de passe passe alors par l'historique du SQL Editor : change-le
+-- ensuite depuis Admin → Sécurité.
+-- drop obligatoire : le nom du 1er paramètre change (p_tel → p_email).
+drop function if exists public.admin_definir(text, text);
+create or replace function public.admin_definir(p_email text, p_password text)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_email text := lower(btrim(coalesce(p_email, '')));
+begin
+  if v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'EMAIL_INVALIDE'; end if;
+  if p_password is null or length(p_password) < 10 then raise exception 'MDP_INVALIDE'; end if;
+  insert into public.admins (email, password_hash) values (v_email, public._hash_pin(p_password))
+  on conflict (email) do update
+    set password_hash = excluded.password_hash, session_hash = null, essais = 0, bloque_jusqua = null;
+end $$;
 
--- Migration : si le schéma a déjà été lancé avec l'ancien numéro par défaut
--- (0700000000) et que personne ne l'a encore changé, on le met à jour ici.
-update public.admins set telephone = '0566036825'
- where telephone = '0700000000' and password_hash = public._hash_secret(id, 'admin123');
+-- Migration v7 : l'ancien admin par défaut avait un mot de passe public (écrit
+-- dans ce fichier et le README). S'il n'a jamais été changé, le compte est
+-- désactivé et ses sessions coupées : le réactiver avec admin_definir().
+-- (On compare au hachage de l'ancienne valeur, ce n'est pas un identifiant.)
+update public.admins
+   set password_hash = '!desactive-v7', session_hash = null
+ where password_hash = public._hash_secret(id, 'admin' || '123');
 
--- ─── RPC : connexion unifiée ────────────────────────────────────────────────
--- Le même formulaire sert aux 3 rôles : l'admin est reconnu par son téléphone
--- quel que soit l'onglet choisi côté client (aucun lien /admin visible).
+-- ─── RPC : connexion ────────────────────────────────────────────────────────
+-- Admin : UNIQUEMENT auth_admin_login (email + mot de passe), appelée depuis sa
+-- page secrète. auth_login ne connecte jamais un admin.
+create or replace function public.auth_admin_login(p_email text, p_password text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_email text := lower(btrim(coalesce(p_email, '')));
+  v_token text := public._new_token();
+  a public.admins%rowtype;
+  v_lock boolean;
+begin
+  select * into a from public.admins where email = v_email for update;
+  if not found then return jsonb_build_object('ok', false, 'error', 'AUTH_ADMIN'); end if;
+  if a.bloque_jusqua is not null and a.bloque_jusqua > now() then
+    return jsonb_build_object('ok', false, 'error', 'BLOQUE');
+  end if;
+  if not public._secret_ok(a.id, p_password, a.password_hash) then
+    v_lock := a.essais + 1 >= 5;
+    update public.admins set essais = case when v_lock then 0 else essais + 1 end,
+           bloque_jusqua = case when v_lock then now() + interval '15 minutes' else null end
+     where id = a.id;
+    return jsonb_build_object('ok', false, 'error', case when v_lock then 'BLOQUE' else 'AUTH_ADMIN' end);
+  end if;
+  update public.admins set essais = 0, bloque_jusqua = null, session_hash = public._hash_token(v_token),
+         password_hash = case when a.password_hash like '$2%' then a.password_hash else public._hash_pin(p_password) end
+   where id = a.id;
+  return jsonb_build_object('ok', true, 'role', 'admin', 'token', v_token, 'profile', jsonb_build_object('email', v_email));
+end $$;
 
+-- Client / chauffeur par téléphone + PIN. p_role = 'auto' (page /login sans
+-- choix de rôle) : on essaie le compte client puis le compte chauffeur de ce
+-- numéro ; un échec compte un essai sur chacun (5 échecs → 15 min de blocage).
 create or replace function public.auth_login(p_role text, p_tel text, p_pin text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_tel   text := public.normalize_phone(p_tel);
   v_token text := public._new_token();
-  a public.admins%rowtype;
-  t public.tricycles%rowtype;
+  t  public.tricycles%rowtype;
   cl public.clients%rowtype;
+  v_cl boolean := false;
+  v_t  boolean := false;
+  v_bloque boolean := false;
   v_lock boolean;
 begin
-  -- 1) Admin (indépendant de l'onglet choisi)
-  select * into a from public.admins where telephone = v_tel for update;
-  if found then
-    if a.bloque_jusqua is not null and a.bloque_jusqua > now() then
-      return jsonb_build_object('ok', false, 'error', 'BLOQUE');
-    end if;
-    if a.password_hash <> public._hash_secret(a.id, p_pin) then
-      v_lock := a.essais + 1 >= 5;
-      update public.admins set essais = case when v_lock then 0 else essais + 1 end,
-             bloque_jusqua = case when v_lock then now() + interval '15 minutes' else null end
-       where id = a.id;
-      return jsonb_build_object('ok', false, 'error', case when v_lock then 'BLOQUE' else 'AUTH' end);
-    end if;
-    update public.admins set essais = 0, bloque_jusqua = null, session_hash = public._hash_token(v_token) where id = a.id;
-    return jsonb_build_object('ok', true, 'role', 'admin', 'token', v_token, 'profile', jsonb_build_object('telephone', v_tel));
+  if p_role in ('client', 'auto') then
+    select * into cl from public.clients where telephone = v_tel and not is_temporary for update;
+    v_cl := found;
+  end if;
+  if p_role in ('chauffeur', 'auto') then
+    select * into t from public.tricycles where telephone = v_tel for update;
+    v_t := found;
+  end if;
+  if not v_cl and not v_t then return jsonb_build_object('ok', false, 'error', 'AUTH'); end if;
+
+  if v_cl and (cl.pin_bloque_jusqua is null or cl.pin_bloque_jusqua <= now()) and public._secret_ok(cl.id, p_pin, cl.pin_hash) then
+    update public.clients set pin_essais = 0, pin_bloque_jusqua = null, session_hash = public._hash_token(v_token),
+           pin_hash = case when cl.pin_hash like '$2%' then cl.pin_hash else public._hash_pin(p_pin) end
+     where id = cl.id;
+    return jsonb_build_object('ok', true, 'role', 'client', 'token', v_token, 'profile', public._client_profil(cl.id));
   end if;
 
-  -- 2) Client
-  if p_role = 'client' then
-    select * into cl from public.clients where telephone = v_tel for update;
-    if not found then return jsonb_build_object('ok', false, 'error', 'AUTH'); end if;
+  if v_t and (t.pin_bloque_jusqua is null or t.pin_bloque_jusqua <= now()) and public._secret_ok(t.id, p_pin, t.pin_hash) then
+    update public.tricycles set pin_essais = 0, pin_bloque_jusqua = null, session_hash = public._hash_token(v_token),
+           pin_hash = case when t.pin_hash like '$2%' then t.pin_hash else public._hash_pin(p_pin) end
+     where id = t.id;
+    return jsonb_build_object('ok', true, 'role', 'chauffeur', 'token', v_token, 'profile', public._chauffeur_profil(t.id));
+  end if;
+
+  -- Échec : un essai de plus sur chaque compte de ce numéro.
+  if v_cl then
     if cl.pin_bloque_jusqua is not null and cl.pin_bloque_jusqua > now() then
-      return jsonb_build_object('ok', false, 'error', 'BLOQUE');
-    end if;
-    if cl.pin_hash <> public._hash_secret(cl.id, p_pin) then
+      v_bloque := true;
+    else
       v_lock := cl.pin_essais + 1 >= 5;
       update public.clients set pin_essais = case when v_lock then 0 else pin_essais + 1 end,
              pin_bloque_jusqua = case when v_lock then now() + interval '15 minutes' else null end
        where id = cl.id;
-      return jsonb_build_object('ok', false, 'error', case when v_lock then 'BLOQUE' else 'AUTH' end);
+      v_bloque := v_bloque or v_lock;
     end if;
-    update public.clients set pin_essais = 0, pin_bloque_jusqua = null, session_hash = public._hash_token(v_token) where id = cl.id;
-    return jsonb_build_object('ok', true, 'role', 'client', 'token', v_token, 'profile', public._client_profil(cl.id));
   end if;
-
-  -- 3) Chauffeur
-  select * into t from public.tricycles where telephone = v_tel for update;
-  if not found then return jsonb_build_object('ok', false, 'error', 'AUTH'); end if;
-  if t.pin_bloque_jusqua is not null and t.pin_bloque_jusqua > now() then
-    return jsonb_build_object('ok', false, 'error', 'BLOQUE');
+  if v_t then
+    if t.pin_bloque_jusqua is not null and t.pin_bloque_jusqua > now() then
+      v_bloque := true;
+    else
+      v_lock := t.pin_essais + 1 >= 5;
+      update public.tricycles set pin_essais = case when v_lock then 0 else pin_essais + 1 end,
+             pin_bloque_jusqua = case when v_lock then now() + interval '15 minutes' else null end
+       where id = t.id;
+      v_bloque := v_bloque or v_lock;
+    end if;
   end if;
-  if t.pin_hash <> public._hash_secret(t.id, p_pin) then
-    v_lock := t.pin_essais + 1 >= 5;
-    update public.tricycles set pin_essais = case when v_lock then 0 else pin_essais + 1 end,
-           pin_bloque_jusqua = case when v_lock then now() + interval '15 minutes' else null end
-     where id = t.id;
-    return jsonb_build_object('ok', false, 'error', case when v_lock then 'BLOQUE' else 'AUTH' end);
-  end if;
-  update public.tricycles set pin_essais = 0, pin_bloque_jusqua = null, session_hash = public._hash_token(v_token) where id = t.id;
-  return jsonb_build_object('ok', true, 'role', 'chauffeur', 'token', v_token, 'profile', public._chauffeur_profil(t.id));
+  return jsonb_build_object('ok', false, 'error', case when v_bloque then 'BLOQUE' else 'AUTH' end);
 end $$;
 
 -- ─── RPC : inscription ──────────────────────────────────────────────────────
@@ -476,31 +762,43 @@ declare
   v_token text := public._new_token();
 begin
   if v_nom = '' or length(v_nom) > 40 then raise exception 'NOM_INVALIDE'; end if;
-  if length(v_tel) < 8 or length(v_tel) > 16 then raise exception 'TEL_INVALIDE'; end if;
+  if public._phone_ci(v_tel) is null then raise exception 'TEL_INVALIDE_CI'; end if;
   if p_pin is null or p_pin !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
   if v_lot = '' or length(v_lot) > 20 then raise exception 'LOT_INVALIDE'; end if;
   if not exists (select 1 from public.cites where id = p_cite) then raise exception 'CITE_INTROUVABLE'; end if;
   if exists (select 1 from public.admins where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
-  if exists (select 1 from public.clients where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
+  if exists (select 1 from public.clients where telephone = v_tel and not is_temporary) then raise exception 'DEJA_INSCRIT'; end if;
 
   if p_lat is null or p_long is null or p_lat not between -90 and 90 or p_long not between -180 and 180 then
     p_lat := null; p_long := null;
   end if;
 
+  -- Client temporaire (saisi par un chauffeur) : il récupère son compte et son historique.
+  select id into v_id from public.clients where telephone = v_tel and is_temporary;
+  if found then
+    update public.clients
+       set nom = v_nom, cite_id = p_cite, lot_numero = v_lot, lat = p_lat, long = p_long,
+           pin_hash = public._hash_pin(p_pin), session_hash = public._hash_token(v_token),
+           solde_points = 1200, is_temporary = false
+     where id = v_id;
+    return jsonb_build_object('token', v_token, 'profile', public._client_profil(v_id));
+  end if;
+  v_id := gen_random_uuid();
+
   insert into public.clients (id, nom, telephone, cite_id, lot_numero, lat, long, statut, pin_hash, session_hash)
-  values (v_id, v_nom, v_tel, p_cite, v_lot, p_lat, p_long, 'IMPAYE', public._hash_secret(v_id, p_pin), public._hash_token(v_token));
+  values (v_id, v_nom, v_tel, p_cite, v_lot, p_lat, p_long, 'IMPAYE', public._hash_pin(p_pin), public._hash_token(v_token));
 
   return jsonb_build_object('token', v_token, 'profile', public._client_profil(v_id));
 end $$;
 
--- p_cites : au moins une cité (obligatoire, c'est ce qui détermine quels clients
--- le voient) — mais plusieurs sont permises, un chauffeur peut livrer plusieurs
--- cités à la fois. p_source est facultatif (NULL) : un chauffeur qui ne fixe pas
--- de forage précis puise "un peu partout" dans ses cités.
--- drop obligatoire : l'ancienne signature (p_source uuid en 3e position, sans
--- p_cites) reste sinon en base comme fonction surchargée orpheline.
+-- p_cite : UNE cité obligatoire, définitive (c'est ce qui détermine quels
+-- clients le voient). p_source est facultatif (NULL) mais doit appartenir à
+-- cette cité.
+-- drop obligatoire : les anciennes signatures (source seule, puis tableau de
+-- cités) resteraient sinon en base comme fonctions surchargées orphelines.
 drop function if exists public.inscrire_chauffeur(text, text, uuid, text, int);
-create or replace function public.inscrire_chauffeur(p_nom text, p_tel text, p_cites uuid[], p_source uuid, p_pin text, p_prix int)
+drop function if exists public.inscrire_chauffeur(text, text, uuid[], uuid, text, int);
+create or replace function public.inscrire_chauffeur(p_nom text, p_tel text, p_cite uuid, p_source uuid, p_pin text, p_prix int)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_nom text := btrim(coalesce(p_nom, ''));
@@ -509,24 +807,18 @@ declare
   v_token text := public._new_token();
 begin
   if v_nom = '' or length(v_nom) > 40 then raise exception 'NOM_INVALIDE'; end if;
-  if length(v_tel) < 8 or length(v_tel) > 16 then raise exception 'TEL_INVALIDE'; end if;
+  if public._phone_ci(v_tel) is null then raise exception 'TEL_INVALIDE_CI'; end if;
   if p_pin is null or p_pin !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
   if p_prix is null or p_prix not between 100 and 50000 then raise exception 'PRIX_INVALIDE'; end if;
-  if p_cites is null or array_length(p_cites, 1) is null then raise exception 'CITE_INTROUVABLE'; end if;
-  if exists (select 1 from unnest(p_cites) x(id) where not exists (select 1 from public.cites where id = x.id)) then
-    raise exception 'CITE_INTROUVABLE';
-  end if;
-  if p_source is not null and not exists (select 1 from public.sources where id = p_source and cite_id = any(p_cites)) then
+  if p_cite is null or not exists (select 1 from public.cites where id = p_cite) then raise exception 'CITE_INTROUVABLE'; end if;
+  if p_source is not null and not exists (select 1 from public.sources where id = p_source and cite_id = p_cite) then
     raise exception 'SOURCE_INTROUVABLE';
   end if;
   if exists (select 1 from public.admins where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
   if exists (select 1 from public.tricycles where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
 
-  insert into public.tricycles (id, nom, telephone, source_id, prix_1000, statut, pin_hash, session_hash)
-  values (v_id, v_nom, v_tel, p_source, p_prix, 'IMPAYE', public._hash_secret(v_id, p_pin), public._hash_token(v_token));
-
-  insert into public.tricycle_cites (tricycle_id, cite_id)
-  select distinct v_id, x.id from unnest(p_cites) x(id);
+  insert into public.tricycles (id, nom, telephone, cite_id, source_id, prix_1000, statut, pin_hash, session_hash)
+  values (v_id, v_nom, v_tel, p_cite, p_source, p_prix, 'IMPAYE', public._hash_pin(p_pin), public._hash_token(v_token));
 
   return jsonb_build_object('token', v_token, 'profile', public._chauffeur_profil(v_id));
 end $$;
@@ -538,56 +830,131 @@ returns jsonb language sql stable security definer set search_path = public as $
   select public._client_profil(public._auth_client(p_tel, p_token))
 $$;
 
+-- Tous les chauffeurs de LA cité du client restent visibles et commandables,
+-- quel que soit leur statut (ACTIVE / PAUSED / OFFLINE) : le chauffeur ne
+-- refuse jamais, le client voit juste quand il sera livré. Seuls les comptes
+-- bloqués (admin) ou à solde épuisé disparaissent.
 drop function if exists public.tricycles_dispo(uuid);
 create or replace function public.tricycles_dispo(p_cite uuid)
-returns table (id uuid, nom text, source_id uuid, source_nom text, etat text, file_count int, prix_1000 int)
+returns table (id uuid, nom text, source_id uuid, source_nom text, etat text, file_count int, prix_1000 int, status text)
 language sql stable security definer set search_path = public as $$
   select t.id, t.nom, s.id, s.nom, t.etat,
-         (select count(*)::int from public.commandes c where c.tricycle_id = t.id and c.status in ('EN_ATTENTE', 'EN_COURS')),
-         t.prix_1000
+         (select count(*)::int from public.commandes c
+           where c.tricycle_id = t.id and c.status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')),
+         t.prix_1000, t.status
   from public.tricycles t
   left join public.sources s on s.id = t.source_id
-  where t.status = 'DISPO' and t.statut <> 'BLOQUE' and not t.is_offline
-    and exists (select 1 from public.tricycle_cites tc where tc.tricycle_id = t.id and tc.cite_id = p_cite)
-  order by 6, t.nom
+  where t.cite_id = p_cite and t.statut <> 'BLOQUE' and not t.is_offline
+  order by case t.status when 'ACTIVE' then 0 when 'PAUSED' then 1 else 2 end, 6, t.nom
 $$;
+
+-- Prochain 8h00 heure d'Abidjan (UTC+0, pas d'heure d'été) : aujourd'hui s'il
+-- n'est pas encore 8h, sinon demain.
+create or replace function public._prochain_8h()
+returns timestamptz language sql stable as $$
+  select (case when x.local_now < date_trunc('day', x.local_now) + interval '8 hours'
+               then date_trunc('day', x.local_now) + interval '8 hours'
+               else date_trunc('day', x.local_now) + interval '1 day 8 hours' end) at time zone 'Africa/Abidjan'
+  from (select now() at time zone 'Africa/Abidjan' as local_now) x
+$$;
+
+-- Distance à vol d'oiseau (Haversine), en mètres.
+create or replace function public._distance_m(lat1 double precision, lng1 double precision, lat2 double precision, lng2 double precision)
+returns double precision language sql immutable as $$
+  select 2 * 6371000 * asin(least(1, sqrt(
+    power(sin(radians(lat2 - lat1) / 2), 2) +
+    cos(radians(lat1)) * cos(radians(lat2)) * power(sin(radians(lng2 - lng1) / 2), 2))))
+$$;
+
+create or replace function public._today_abj()
+returns date language sql stable as $$
+  select (now() at time zone 'Africa/Abidjan')::date
+$$;
+
+-- Numéro ivoirien à 10 chiffres (01, 05, 07 mobiles ; 21, 25, 27 fixes),
+-- indicatif +225 / 00225 accepté. Renvoie la forme canonique, ou NULL si invalide.
+create or replace function public._phone_ci(p text)
+returns text language sql immutable as $$
+  select case when n ~ '^(01|05|07|21|25|27)[0-9]{8}$' then n end
+  from (select public.normalize_phone(p) as n) x
+$$;
+
+-- -50 points au chauffeur pour une commande reçue, bonus fidélité dès 5000
+-- utilisés, passage is_offline sous 50. Le tricycle doit déjà être verrouillé.
+create or replace function public._debiter_chauffeur(p_tricycle uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_solde int;
+  v_utilise int;
+begin
+  select solde_points - 50, total_points_utilises + 50 into v_solde, v_utilise from public.tricycles where id = p_tricycle;
+  insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, -50, 'DEDUCTION');
+  if v_utilise >= 5000 then
+    v_solde := v_solde + 50;
+    v_utilise := 0;
+    insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, 50, 'BONUS_FIDELITE');
+  end if;
+  update public.tricycles set solde_points = v_solde, total_points_utilises = v_utilise, is_offline = (v_solde < 50)
+   where id = p_tricycle;
+end $$;
 
 -- Une commande = un voyage = 1000 L, au prix du chauffeur (figé). Le client doit
 -- être authentifié : on ne fait plus confiance à un numéro déclaré librement.
 --
--- Points (1 FCFA = 1 point) — système 100% recharge, double déduction atomique
--- à la CRÉATION de la commande (dès qu'elle est assignée au chauffeur, pas à
--- l'acceptation de la livraison) :
---   1. client.solde_points doit être >= 100, sinon SOLDE_INSUFFISANT_CLIENT
---   2. tricycle.solde_points doit être >= 50, sinon SOLDE_INSUFFISANT
---   3. client.solde_points -= 100 ; tricycle.solde_points -= 50, dans la même transaction
---   4. fidélité chauffeur : dès 5000 points cumulés utilisés, +50 points offerts
---   5. si le solde du chauffeur retombe sous 50, il passe is_offline
+-- Contrôles, dans l'ordre :
+--   1. Règle Attiéké : déjà une commande active → 403 TROP_DE_COMMANDES:<id>
+--   2. Verrouillage par cité : tricycle d'une autre cité → 403 HORS_ZONE
+--   3. Forage du chauffeur à plus de 7 km de la position du client → TROP_LOIN
+-- (403 = SQLSTATE PT403, que PostgREST renvoie tel quel comme statut HTTP.)
+--
+-- Jour de livraison (p_demain) : aujourd'hui ou demain uniquement.
+--   Demain → PROGRAMMED pour demain 8h, quel que soit le chauffeur.
+--   Aujourd'hui, selon le chauffeur (il ne refuse jamais) :
+--     ACTIVE → ASSIGNED · PAUSED → QUEUED · OFFLINE → PROGRAMMED (prochain 8h)
+-- Une commande programmée pour un jour suivant n'est plus annulable après 18h la veille.
+--
+-- Points (1 FCFA = 1 point), déduits à la création, rendus si le client annule :
+--   client -100 (min 100) ; chauffeur -50 (min 50) + fidélité dès 5000 utilisés ;
+--   sous 50, le chauffeur passe is_offline.
+drop function if exists public.creer_commande(uuid, text, text, double precision, double precision);
 create or replace function public.creer_commande(
   p_tricycle uuid, p_tel text, p_token text,
-  p_lat double precision default null, p_long double precision default null
+  p_lat double precision default null, p_long double precision default null,
+  p_demain boolean default false
 ) returns uuid language plpgsql security definer set search_path = public as $$
 declare
   v_client_id uuid := public._auth_client(p_tel, p_token);
   v_client public.clients%rowtype;
   v_t public.tricycles%rowtype;
+  v_src public.sources%rowtype;
+  v_active uuid;
+  v_status text;
+  v_prog timestamptz;
+  v_sched date := public._today_abj();
   v_pos int;
   v_id  uuid;
   v_lat double precision;
   v_long double precision;
-  v_t_solde   int;
-  v_t_utilise int;
 begin
   select * into v_client from public.clients where id = v_client_id for update;
   if v_client.statut = 'BLOQUE' then raise exception 'COMPTE_BLOQUE'; end if;
+
+  select c.id into v_active from public.commandes c
+   where c.client_id = v_client_id and c.status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
+   order by c.created_at desc limit 1;
+  if v_active is not null then
+    raise exception using errcode = 'PT403', message = 'TROP_DE_COMMANDES:' || upper(left(v_active::text, 6));
+  end if;
+
   if v_client.solde_points < 100 then raise exception 'SOLDE_INSUFFISANT_CLIENT'; end if;
 
   select * into v_t from public.tricycles where id = p_tricycle for update;
-  if not found or v_t.status <> 'DISPO' or v_t.statut = 'BLOQUE' then raise exception 'TRICYCLE_INDISPONIBLE'; end if;
-  if v_t.solde_points < 50 then raise exception 'SOLDE_INSUFFISANT'; end if;
+  if not found or v_t.statut = 'BLOQUE' or v_t.is_offline or v_t.solde_points < 50 then
+    raise exception 'TRICYCLE_INDISPONIBLE';
+  end if;
 
-  if exists (select 1 from public.commandes where client_id = v_client_id and status in ('EN_ATTENTE', 'EN_COURS')) then
-    raise exception 'TROP_DE_COMMANDES';
+  if v_t.cite_id <> v_client.cite_id then
+    raise exception using errcode = 'PT403', message = 'HORS_ZONE';
   end if;
 
   if p_lat is null or p_long is null or p_lat not between -90 and 90 or p_long not between -180 and 180 then
@@ -596,78 +963,191 @@ begin
     v_lat := p_lat; v_long := p_long;
   end if;
 
-  select count(*) + 1 into v_pos from public.commandes where tricycle_id = p_tricycle and status in ('EN_ATTENTE', 'EN_COURS');
+  -- Garde-fou distance : seulement si on connaît les 2 positions (client + forage).
+  if v_t.source_id is not null and v_lat is not null then
+    select * into v_src from public.sources where id = v_t.source_id;
+    if v_src.lat is not null and public._distance_m(v_src.lat, v_src.long, v_lat, v_long) > 7000 then
+      raise exception 'TROP_LOIN';
+    end if;
+  end if;
 
-  insert into public.commandes (client_id, tricycle_id, cite_id, lot_numero, position_file, prix, lat, long)
-  values (v_client_id, p_tricycle, v_client.cite_id, v_client.lot_numero, v_pos, v_t.prix_1000, v_lat, v_long)
+  if coalesce(p_demain, false) then
+    v_status := 'PROGRAMMED';
+    v_sched := v_sched + 1;
+    v_prog := (v_sched + time '08:00') at time zone 'Africa/Abidjan';
+  else
+    v_status := case v_t.status when 'ACTIVE' then 'ASSIGNED' when 'PAUSED' then 'QUEUED' else 'PROGRAMMED' end;
+    if v_status = 'PROGRAMMED' then
+      v_prog := public._prochain_8h();
+      v_sched := (v_prog at time zone 'Africa/Abidjan')::date;
+    end if;
+  end if;
+
+  select count(*) + 1 into v_pos from public.commandes
+   where tricycle_id = p_tricycle and status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING');
+
+  insert into public.commandes (client_id, tricycle_id, cite_id, lot_numero, position_file, status, prix, lat, long,
+                                programmee_pour, scheduled_for, annulable_jusqua)
+  values (v_client_id, p_tricycle, v_client.cite_id, v_client.lot_numero, v_pos, v_status, v_t.prix_1000, v_lat, v_long,
+          v_prog, v_sched,
+          case when v_sched > public._today_abj() then ((v_sched - 1) + time '18:00') at time zone 'Africa/Abidjan' end)
   returning id into v_id;
 
-  -- Déduction client (100 points par commande).
   update public.clients set solde_points = solde_points - 100 where id = v_client_id;
   insert into public.points_transactions (client_id, montant, type) values (v_client_id, -100, 'DEDUCTION');
-
-  -- Déduction chauffeur (50 points par commande assignée) + fidélité + passage hors ligne.
-  v_t_solde := v_t.solde_points - 50;
-  v_t_utilise := v_t.total_points_utilises + 50;
-  insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, -50, 'DEDUCTION');
-  if v_t_utilise >= 5000 then
-    v_t_solde := v_t_solde + 50;
-    v_t_utilise := 0;
-    insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, 50, 'BONUS_FIDELITE');
-  end if;
-  update public.tricycles
-     set solde_points = v_t_solde, total_points_utilises = v_t_utilise, is_offline = (v_t_solde < 50)
-   where id = p_tricycle;
+  perform public._debiter_chauffeur(p_tricycle);
 
   return v_id;
 end $$;
 
--- drop obligatoire (retour changé : ajout des 3 colonnes de position live du
--- tricycle) — CREATE OR REPLACE seul refuse un changement de type de retour.
-drop function if exists public.suivi_commande(uuid);
-create or replace function public.suivi_commande(p_id uuid)
-returns table (
-  id uuid, status text, position_file int, prix int, lot_numero text,
-  lat double precision, long double precision, created_at timestamptz,
-  tricycle_id uuid, chauffeur_nom text, chauffeur_tel text, etat text,
-  cite_nom text, source_nom text,
-  tricycle_lat double precision, tricycle_long double precision, tricycle_position_maj timestamptz
-)
+-- Saisie directe par le chauffeur (appel, client sur place). Le client est
+-- retrouvé par son numéro, ou créé en client temporaire. La commande entre
+-- directement dans sa file (ASSIGNED), sans débit de points côté client.
+create or replace function public.chauffeur_commande_manuelle(
+  p_tel text, p_token text, p_nom text, p_client_tel text, p_lot text,
+  p_quantite int default null, p_note text default null
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  v       uuid := public._auth_tricycle(p_tel, p_token);
+  v_t     public.tricycles%rowtype;
+  v_cl    public.clients%rowtype;
+  v_nom   text := btrim(coalesce(p_nom, ''));
+  v_ctel  text := public._phone_ci(p_client_tel);
+  v_lot   text := btrim(coalesce(p_lot, ''));
+  v_note  text := nullif(btrim(coalesce(p_note, '')), '');
+  v_temp  boolean := false;
+  v_active uuid;
+  v_pos   int;
+  v_id    uuid;
+begin
+  if v_nom = '' or length(v_nom) > 40 then raise exception 'NOM_INVALIDE'; end if;
+  if v_ctel is null then raise exception 'TEL_INVALIDE_CI'; end if;
+  if v_lot = '' or length(v_lot) > 20 then raise exception 'LOT_INVALIDE'; end if;
+  if p_quantite is not null and p_quantite not between 1 and 200 then raise exception 'QUANTITE_INVALIDE'; end if;
+  if v_note is not null and length(v_note) > 280 then raise exception 'NOTE_INVALIDE'; end if;
+
+  select * into v_t from public.tricycles where id = v for update;
+  if v_t.statut = 'BLOQUE' then raise exception 'COMPTE_BLOQUE'; end if;
+  if v_t.is_offline or v_t.solde_points < 50 then raise exception 'SOLDE_INSUFFISANT'; end if;
+
+  select * into v_cl from public.clients
+   where telephone = v_ctel
+   order by is_temporary limit 1
+   for update;
+  if found then
+    if v_cl.cite_id <> v_t.cite_id then raise exception using errcode = 'PT403', message = 'HORS_ZONE'; end if;
+    if v_cl.statut = 'BLOQUE' then raise exception 'CLIENT_BLOQUE'; end if;
+    select c.id into v_active from public.commandes c
+     where c.client_id = v_cl.id and c.status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
+     order by c.created_at desc limit 1;
+    if v_active is not null then
+      raise exception using errcode = 'PT403', message = 'TROP_DE_COMMANDES:' || upper(left(v_active::text, 6));
+    end if;
+    v_temp := v_cl.is_temporary;
+  else
+    v_cl.id := gen_random_uuid();
+    insert into public.clients (id, nom, telephone, cite_id, lot_numero, statut, solde_points, is_temporary, pin_hash)
+    values (v_cl.id, v_nom, v_ctel, v_t.cite_id, v_lot, 'IMPAYE', 0, true, '!' || public._new_token());
+    v_temp := true;
+  end if;
+
+  select count(*) + 1 into v_pos from public.commandes
+   where tricycle_id = v and status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING');
+
+  insert into public.commandes (client_id, tricycle_id, cite_id, lot_numero, position_file, status, prix, lat, long,
+                                source, added_by_driver_id, is_temporary_client, quantite_bidons, note)
+  values (v_cl.id, v, v_t.cite_id, v_lot, v_pos, 'ASSIGNED', v_t.prix_1000, v_cl.lat, v_cl.long,
+          'manual', v, v_temp, p_quantite, v_note)
+  returning id into v_id;
+
+  perform public._debiter_chauffeur(v);
+
+  insert into public.journal_actions (action, acteur_type, acteur_id, details)
+  values ('COMMANDE_MANUELLE', 'chauffeur', v,
+          jsonb_build_object('commande_id', v_id, 'client_id', v_cl.id, 'client_temporaire', v_temp, 'chauffeur_nom', v_t.nom));
+
+  return v_id;
+end $$;
+
+-- Lots déjà connus dans la cité du chauffeur (liste de la saisie directe).
+create or replace function public.chauffeur_lots(p_tel text, p_token text)
+returns table (lot_numero text)
 language sql stable security definer set search_path = public as $$
-  select c.id, c.status, c.position_file, c.prix, c.lot_numero,
-         c.lat, c.long, c.created_at,
-         t.id, t.nom, t.telephone, t.etat,
-         ci.nom, s.nom,
-         t.lat, t.long, t.position_maj
-  from public.commandes c
-  join public.tricycles t on t.id = c.tricycle_id
-  left join public.sources   s on s.id = t.source_id
-  join public.cites    ci on ci.id = c.cite_id
-  where c.id = p_id
+  select distinct cl.lot_numero from public.clients cl
+  join public.tricycles t on t.cite_id = cl.cite_id
+  where t.id = public._auth_tricycle(p_tel, p_token)
+  order by 1
 $$;
 
--- drop obligatoire (même raison que suivi_commande ci-dessus).
+-- Le client annule tant que le chauffeur n'est pas parti (QUEUED / ASSIGNED /
+-- PROGRAMMED) : la file remonte d'un cran et les points sont rendus des 2 côtés.
+create or replace function public.client_annuler_commande(p_tel text, p_token text, p_commande uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_client uuid := public._auth_client(p_tel, p_token);
+  v_cmd public.commandes%rowtype;
+  v_solde int;
+begin
+  -- Même ordre de verrous que creer_commande (client puis tricycle).
+  perform 1 from public.clients where id = v_client for update;
+  select * into v_cmd from public.commandes where id = p_commande and client_id = v_client;
+  if not found or v_cmd.status not in ('QUEUED', 'ASSIGNED', 'PROGRAMMED') then raise exception 'ANNULATION_IMPOSSIBLE'; end if;
+  if v_cmd.annulable_jusqua is not null and now() >= v_cmd.annulable_jusqua then raise exception 'ANNULATION_TARDIVE'; end if;
+  perform 1 from public.tricycles where id = v_cmd.tricycle_id for update;
+
+  update public.commandes set status = 'ANNULEE', position_file = 0, programmee_pour = null where id = p_commande;
+  update public.commandes set position_file = position_file - 1
+   where tricycle_id = v_cmd.tricycle_id and position_file > v_cmd.position_file
+     and status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING');
+
+  if v_cmd.source = 'app' then
+    update public.clients set solde_points = solde_points + 100 where id = v_client;
+    insert into public.points_transactions (client_id, montant, type, commande_id) values (v_client, 100, 'REMBOURSEMENT', p_commande);
+  end if;
+  update public.tricycles set solde_points = solde_points + 50 where id = v_cmd.tricycle_id returning solde_points into v_solde;
+  if v_solde >= 50 then update public.tricycles set is_offline = false where id = v_cmd.tricycle_id; end if;
+  insert into public.points_transactions (tricycle_id, montant, type, commande_id) values (v_cmd.tricycle_id, 50, 'REMBOURSEMENT', p_commande);
+end $$;
+
+-- Vue interne du suivi d'une commande (jamais exposée : droits retirés plus bas,
+-- lue uniquement par les 2 RPC qui suivent). La position live du tricycle n'est
+-- remplie que pendant ARRIVING, dans les 10 min qui suivent « J'arrive chez
+-- toi », et si elle a moins de 5 min (TTL de positions_live).
+drop function if exists public.suivi_commande(uuid);
 drop function if exists public.client_commande_active(text, text);
--- Commande active du client connecté (pour son tableau de bord, sans lien secret).
-create or replace function public.client_commande_active(p_tel text, p_token text)
-returns table (
-  id uuid, status text, position_file int, prix int, lot_numero text,
-  lat double precision, long double precision, created_at timestamptz,
-  tricycle_id uuid, chauffeur_nom text, chauffeur_tel text, etat text,
-  cite_nom text, source_nom text,
-  tricycle_lat double precision, tricycle_long double precision, tricycle_position_maj timestamptz
-)
-language sql stable security definer set search_path = public as $$
+drop view if exists public.v_suivi;
+create view public.v_suivi as
   select c.id, c.status, c.position_file, c.prix, c.lot_numero,
-         c.lat, c.long, c.created_at,
-         t.id, t.nom, t.telephone, t.etat,
-         ci.nom, s.nom,
-         t.lat, t.long, t.position_maj
+         c.lat, c.long, c.created_at, c.programmee_pour, c.arriving_at,
+         c.scheduled_for, c.annulable_jusqua, c.source,
+         t.id as tricycle_id, t.nom as chauffeur_nom, t.telephone as chauffeur_tel, t.etat, t.status as chauffeur_status,
+         ci.nom as cite_nom, s.nom as source_nom,
+         p.lat as tricycle_lat, p.long as tricycle_long, p.maj as tricycle_position_maj
   from public.commandes c
   join public.tricycles t on t.id = c.tricycle_id
-  left join public.sources   s on s.id = t.source_id
-  join public.cites    ci on ci.id = c.cite_id
-  where c.client_id = public._auth_client(p_tel, p_token) and c.status in ('EN_ATTENTE', 'EN_COURS')
+  left join public.sources s on s.id = t.source_id
+  join public.cites ci on ci.id = c.cite_id
+  left join public.positions_live p
+         on p.commande_id = c.id
+        and c.status = 'ARRIVING'
+        and c.arriving_at > now() - interval '10 minutes'
+        and p.maj > now() - interval '5 minutes';
+revoke all on public.v_suivi from public, anon, authenticated;
+
+create or replace function public.suivi_commande(p_id uuid)
+returns setof public.v_suivi
+language sql stable security definer set search_path = public as $$
+  select * from public.v_suivi where id = p_id
+$$;
+
+-- Commande active du client connecté (pour son tableau de bord, sans lien secret).
+create or replace function public.client_commande_active(p_tel text, p_token text)
+returns setof public.v_suivi
+language sql stable security definer set search_path = public as $$
+  select v.* from public.v_suivi v
+  join public.commandes c on c.id = v.id
+  where c.client_id = public._auth_client(p_tel, p_token)
+    and c.status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
   order by c.created_at desc limit 1
 $$;
 
@@ -678,32 +1158,49 @@ returns jsonb language sql stable security definer set search_path = public as $
   select public._chauffeur_profil(public._auth_tricycle(p_tel, p_token))
 $$;
 
+drop function if exists public.chauffeur_file(text, text);
 create or replace function public.chauffeur_file(p_tel text, p_token text)
 returns table (
   id uuid, lot_numero text, position_file int, status text,
   lat double precision, long double precision, created_at timestamptz,
-  client_nom text, client_tel text
+  programmee_pour timestamptz, arriving_at timestamptz,
+  client_nom text, client_tel text,
+  scheduled_for date, source text, added_by_nom text, is_temporary_client boolean,
+  quantite_bidons int, note text
 )
 language sql stable security definer set search_path = public as $$
-  select c.id, c.lot_numero, c.position_file, c.status, c.lat, c.long, c.created_at, cl.nom, cl.telephone
+  select c.id, c.lot_numero, c.position_file, c.status, c.lat, c.long, c.created_at,
+         c.programmee_pour, c.arriving_at, cl.nom, cl.telephone,
+         c.scheduled_for, c.source, d.nom, c.is_temporary_client, c.quantite_bidons, c.note
   from public.commandes c
   join public.clients cl on cl.id = c.client_id
-  where c.tricycle_id = public._auth_tricycle(p_tel, p_token) and c.status in ('EN_ATTENTE', 'EN_COURS')
+  left join public.tricycles d on d.id = c.added_by_driver_id
+  where c.tricycle_id = public._auth_tricycle(p_tel, p_token)
+    and c.status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
   order by c.position_file
 $$;
 
+-- ACTIVE / PAUSED / OFFLINE. Repasser ACTIVE assigne d'un coup, dans l'ordre
+-- de la file (FIFO), toutes ses commandes QUEUED — et les PROGRAMMED dont
+-- l'heure est déjà passée.
 create or replace function public.chauffeur_set_status(p_tel text, p_token text, p_status text)
 returns void language plpgsql security definer set search_path = public as $$
-declare v uuid := public._auth_tricycle(p_tel, p_token);
+declare
+  v uuid := public._auth_tricycle(p_tel, p_token);
+  t public.tricycles%rowtype;
 begin
-  if p_status not in ('DISPO', 'OFF') then raise exception 'STATUT_INVALIDE'; end if;
-  if p_status = 'DISPO' and (select statut from public.tricycles where id = v) = 'BLOQUE' then
-    raise exception 'COMPTE_BLOQUE';
-  end if;
-  if p_status = 'DISPO' and (select is_offline from public.tricycles where id = v) then
-    raise exception 'SOLDE_INSUFFISANT';
-  end if;
+  if p_status not in ('ACTIVE', 'PAUSED', 'OFFLINE') then raise exception 'STATUT_INVALIDE'; end if;
+  select * into t from public.tricycles where id = v for update;
+  if p_status <> 'OFFLINE' and t.statut = 'BLOQUE' then raise exception 'COMPTE_BLOQUE'; end if;
+  if p_status <> 'OFFLINE' and t.is_offline then raise exception 'SOLDE_INSUFFISANT'; end if;
+
   update public.tricycles set status = p_status where id = v;
+
+  if p_status = 'ACTIVE' then
+    update public.commandes set status = 'ASSIGNED', programmee_pour = null
+     where tricycle_id = v
+       and (status = 'QUEUED' or (status = 'PROGRAMMED' and scheduled_for <= public._today_abj()));
+  end if;
 end $$;
 
 create or replace function public.chauffeur_set_prix(p_tel text, p_token text, p_prix int)
@@ -722,24 +1219,55 @@ begin
   update public.tricycles set etat = p_etat where id = v;
 end $$;
 
--- Position GPS live (watchPosition côté chauffeur, appelée ~ toutes les 5s).
--- Déclenche le trigger tricycles_notify existant : ping tricycle:<id> + toutes
--- ses cité:<id>, donc le client suivant sa commande se rafraîchit tout seul.
+-- Position GPS live — acceptée UNIQUEMENT pendant ARRIVING, dans les 10 min
+-- qui suivent « J'arrive chez toi ». Le throttle (10 s / 30 s / rien à l'arrêt)
+-- est fait côté téléphone ; ici :
+--   1. dernière position écrasée dans positions_live (cache, TTL 5 min) ;
+--   2. 1 point d'historique toutes les 2 min max dans positions_historique ;
+--   3. diffusion directe sur suivi:<commande_id> — SEUL le client de cette
+--      commande l'écoute. Aucune table surveillée n'est modifiée : pas de
+--      rechargement de la cité ni de l'admin.
+-- Renvoie {actif:false} quand le partage est terminé : le téléphone arrête le GPS.
+drop function if exists public.chauffeur_set_position(text, text, double precision, double precision);
 create or replace function public.chauffeur_set_position(p_tel text, p_token text, p_lat double precision, p_long double precision)
-returns void language plpgsql security definer set search_path = public as $$
-declare v uuid := public._auth_tricycle(p_tel, p_token);
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v     uuid := public._auth_tricycle(p_tel, p_token);
+  v_cmd uuid;
 begin
   if p_lat is null or p_long is null or p_lat not between -90 and 90 or p_long not between -180 and 180 then
     raise exception 'POSITION_INVALIDE';
   end if;
-  update public.tricycles set lat = p_lat, long = p_long, position_maj = now() where id = v;
+
+  select c.id into v_cmd from public.commandes c
+   where c.tricycle_id = v and c.status = 'ARRIVING' and c.arriving_at > now() - interval '10 minutes'
+   limit 1;
+  if v_cmd is null then
+    delete from public.positions_live where tricycle_id = v;
+    return jsonb_build_object('actif', false);
+  end if;
+
+  insert into public.positions_live (tricycle_id, commande_id, lat, long, maj)
+  values (v, v_cmd, p_lat, p_long, now())
+  on conflict (tricycle_id) do update set commande_id = excluded.commande_id, lat = excluded.lat, long = excluded.long, maj = excluded.maj;
+
+  if not exists (select 1 from public.positions_historique
+                  where commande_id = v_cmd and created_at > now() - interval '2 minutes') then
+    insert into public.positions_historique (commande_id, tricycle_id, lat, long) values (v_cmd, v, p_lat, p_long);
+  end if;
+
+  begin
+    perform realtime.send(jsonb_build_object('lat', p_lat, 'long', p_long, 'at', now()), 'position', 'suivi:' || v_cmd, false);
+  exception when others then
+    null; -- le client retombe sur le polling de suivi_commande
+  end;
+
+  return jsonb_build_object('actif', true);
 end $$;
 
--- Les points (1 FCFA = 1 point, -50 par commande) sont désormais déduits dès la
--- CRÉATION de la commande (creer_commande), pas ici : au moment où le chauffeur
--- clique « Je pars livrer », la commande est déjà assignée et déjà payée en
--- points. Renvoie quand même jsonb (solde inchangé, bonus_fidelite toujours
--- false) pour ne pas casser le contrat frontend déjà en place.
+-- « Je pars livrer » : la première commande ASSIGNED de la file passe EN_COURS.
+-- Les points ont déjà été déduits à la création de la commande. Renvoie quand
+-- même jsonb (bonus_fidelite toujours false) pour garder le contrat frontend.
 create or replace function public.chauffeur_partir(p_tel text, p_token text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
@@ -748,16 +1276,27 @@ declare
   v_solde int;
 begin
   select solde_points into v_solde from public.tricycles where id = v for update;
-  if exists (select 1 from public.commandes where tricycle_id = v and status = 'EN_COURS') then
+  if exists (select 1 from public.commandes where tricycle_id = v and status in ('EN_COURS', 'ARRIVING')) then
     raise exception 'DEJA_EN_COURS';
   end if;
-  select c.id into v_cmd from public.commandes c where c.tricycle_id = v and c.status = 'EN_ATTENTE' order by c.position_file limit 1;
+  select c.id into v_cmd from public.commandes c where c.tricycle_id = v and c.status = 'ASSIGNED' order by c.position_file limit 1;
   if v_cmd is null then raise exception 'FILE_VIDE'; end if;
 
   update public.commandes set status = 'EN_COURS' where id = v_cmd;
   update public.tricycles set etat = 'EN_ROUTE' where id = v;
 
   return jsonb_build_object('bonus_fidelite', false, 'solde_points', v_solde);
+end $$;
+
+-- « J'arrive chez toi » : EN_COURS → ARRIVING. Ouvre la fenêtre de 10 min
+-- pendant laquelle chauffeur_set_position accepte et diffuse le GPS.
+create or replace function public.chauffeur_arriver(p_tel text, p_token text, p_commande uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v uuid := public._auth_tricycle(p_tel, p_token);
+begin
+  update public.commandes set status = 'ARRIVING', arriving_at = now()
+   where id = p_commande and tricycle_id = v and status = 'EN_COURS';
+  if not found then raise exception 'COMMANDE_INTROUVABLE'; end if;
 end $$;
 
 create or replace function public.chauffeur_livrer(p_tel text, p_token text, p_commande uuid)
@@ -767,11 +1306,86 @@ declare
   v_pos int;
 begin
   perform 1 from public.tricycles where id = v for update;
-  select c.position_file into v_pos from public.commandes c where c.id = p_commande and c.tricycle_id = v and c.status = 'EN_COURS';
+  select c.position_file into v_pos from public.commandes c
+   where c.id = p_commande and c.tricycle_id = v and c.status in ('EN_COURS', 'ARRIVING');
   if v_pos is null then raise exception 'COMMANDE_INTROUVABLE'; end if;
-  update public.commandes set status = 'LIVRE', position_file = 0 where id = p_commande;
+  update public.commandes set status = 'LIVREE', position_file = 0, livree_at = now() where id = p_commande;
   update public.commandes set position_file = position_file - 1
-   where tricycle_id = v and status in ('EN_ATTENTE', 'EN_COURS') and position_file > v_pos;
+   where tricycle_id = v and position_file > v_pos
+     and status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING');
+  -- Fin de course : le partage GPS s'arrête immédiatement.
+  delete from public.positions_live where tricycle_id = v;
+  perform public._journaliser_facturation(p_commande);
+end $$;
+
+-- Facturation (préparation) : chaque livraison est journalisée avec son
+-- montant et son caractère facturable. Rien n'est bloqué ni débité pendant
+-- la période d'essai (settings.trial_ends_at).
+create or replace function public._journaliser_facturation(p_commande uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_fin  date;
+  v_essai boolean;
+begin
+  select trial_ends_at into v_fin from public.settings where id;
+  v_essai := v_fin is null or public._today_abj() <= v_fin;
+  insert into public.journal_actions (action, acteur_type, acteur_id, details)
+  select 'FACTURATION', 'systeme', c.tricycle_id,
+         jsonb_build_object('commande_id', c.id, 'prix', c.prix, 'source', c.source,
+                            'periode_essai', v_essai, 'facturable', not v_essai, 'trial_ends_at', v_fin)
+  from public.commandes c where c.id = p_commande;
+end $$;
+
+-- ─── Tâches planifiées (pg_cron) ───────────────────────────────────────────
+
+-- 23h59 : les commandes QUEUED non livrées du jour passent PROGRAMMED pour
+-- demain 8h. Le trigger notify_change ping client:<id> : le client voit le
+-- nouveau message (« programmée demain 8h ») sans recharger.
+create or replace function public.rollover_queued_orders()
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  update public.commandes
+     set status = 'PROGRAMMED', programmee_pour = public._prochain_8h(),
+         scheduled_for = (public._prochain_8h() at time zone 'Africa/Abidjan')::date
+   where status = 'QUEUED';
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- 00h00 (et 8h00 en rattrapage) : les commandes PROGRAMMED dont le jour est
+-- arrivé entrent dans la file du jour — ASSIGNED si le chauffeur est déjà
+-- ACTIVE, sinon QUEUED (elles lui seront assignées dès qu'il passe ACTIVE).
+create or replace function public.release_programmed_orders()
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  update public.commandes c
+     set status = case when t.status = 'ACTIVE' then 'ASSIGNED' else 'QUEUED' end,
+         programmee_pour = null
+    from public.tricycles t
+   where t.id = c.tricycle_id and c.status = 'PROGRAMMED' and c.scheduled_for <= public._today_abj();
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- TTL de positions_live : purge des positions de plus de 5 min.
+create or replace function public.purge_positions_live()
+returns void language sql security definer set search_path = public as $$
+  delete from public.positions_live where maj < now() - interval '5 minutes'
+$$;
+
+-- pg_cron tourne en UTC sur Supabase = heure d'Abidjan. cron.schedule(nom, …)
+-- met à jour le job s'il existe déjà (idempotent). Si pg_cron n'est pas
+-- activé (Database → Extensions), le schéma passe quand même, avec un avertissement.
+do $$ begin
+  create extension if not exists pg_cron;
+  perform cron.schedule('awa-rollover-queued',   '59 23 * * *', 'select public.rollover_queued_orders()');
+  perform cron.schedule('awa-release-programmed', '0 0 * * *',  'select public.release_programmed_orders()');
+  perform cron.schedule('awa-release-8h',        '0 8 * * *',  'select public.release_programmed_orders()');
+  perform cron.schedule('awa-purge-positions',   '*/5 * * * *', 'select public.purge_positions_live()');
+exception when others then
+  raise warning 'pg_cron indisponible (%). Active l''extension pg_cron puis relance ce script.', sqlerrm;
 end $$;
 
 -- ─── RPC : admin (cockpit total) ────────────────────────────────────────────
@@ -783,14 +1397,12 @@ begin
   return jsonb_build_object(
     'cites', (select coalesce(jsonb_agg(to_jsonb(x) order by x.nom), '[]'::jsonb) from public.cites x),
     'sources', (select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) from public.sources x),
-    'tricycles', (select coalesce(jsonb_agg(
-                    (to_jsonb(x) - 'pin_hash' - 'session_hash' - 'pin_essais' - 'pin_bloque_jusqua' - 'created_at')
-                    || jsonb_build_object('cite_ids', coalesce((select jsonb_agg(tc.cite_id) from public.tricycle_cites tc where tc.tricycle_id = x.id), '[]'::jsonb))
-                  ), '[]'::jsonb)
+    'tricycles', (select coalesce(jsonb_agg(to_jsonb(x) - 'pin_hash' - 'session_hash' - 'pin_essais' - 'pin_bloque_jusqua' - 'created_at'), '[]'::jsonb)
                   from public.tricycles x),
     'clients', (select coalesce(jsonb_agg(to_jsonb(x) - 'pin_hash' - 'session_hash' - 'pin_essais' - 'pin_bloque_jusqua' - 'created_at'), '[]'::jsonb)
                 from public.clients x),
-    'commandes', (select coalesce(jsonb_agg(to_jsonb(x) order by x.created_at desc), '[]'::jsonb) from public.commandes x)
+    'commandes', (select coalesce(jsonb_agg(to_jsonb(x) order by x.created_at desc), '[]'::jsonb) from public.commandes x),
+    'settings', (select to_jsonb(s) - 'id' from public.settings s where s.id)
   );
 end $$;
 
@@ -833,7 +1445,7 @@ declare v uuid := public._auth_admin(p_tel, p_token);
 begin
   if p_statut not in ('PAYE', 'IMPAYE', 'BLOQUE') then raise exception 'STATUT_INVALIDE'; end if;
   if p_table = 'tricycles' then
-    update public.tricycles set statut = p_statut, status = (case when p_statut = 'BLOQUE' then 'OFF' else status end) where id = p_id;
+    update public.tricycles set statut = p_statut, status = (case when p_statut = 'BLOQUE' then 'OFFLINE' else status end) where id = p_id;
   elsif p_table = 'clients' then
     update public.clients set statut = p_statut, date_paiement = (case when p_statut = 'PAYE' then now() else date_paiement end) where id = p_id;
   else raise exception 'TABLE_INVALIDE';
@@ -877,8 +1489,164 @@ create or replace function public.admin_change_password(p_tel text, p_token text
 returns void language plpgsql security definer set search_path = public as $$
 declare v uuid := public._auth_admin(p_tel, p_token);
 begin
-  if p_nouveau is null or length(p_nouveau) < 6 then raise exception 'MDP_INVALIDE'; end if;
-  update public.admins set password_hash = public._hash_secret(id, p_nouveau) where id = v;
+  if p_nouveau is null or length(p_nouveau) < 10 then raise exception 'MDP_INVALIDE'; end if;
+  update public.admins set password_hash = public._hash_pin(p_nouveau) where id = v;
+end $$;
+
+-- ─── RPC : paramètres ───────────────────────────────────────────────────────
+
+-- Lecture publique (page d'accueil, écran « Solde insuffisant ») : seul le
+-- numéro de dépôt sort, pas le reste de settings.
+create or replace function public.get_depot_phone()
+returns text language sql stable security definer set search_path = public as $$
+  select depot_phone from public.settings where id
+$$;
+
+-- Fin de la période d'essai (lecture publique) : pendant l'essai, clients et
+-- chauffeurs voient « Essai gratuit » au lieu de leur statut et de leur solde.
+create or replace function public.get_essai_fin()
+returns date language sql stable security definer set search_path = public as $$
+  select trial_ends_at from public.settings where id
+$$;
+
+create or replace function public.admin_set_depot_phone(p_tel text, p_token text, p_depot text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v uuid := public._auth_admin(p_tel, p_token);
+  v_depot text := public._phone_ci(p_depot);
+  v_ancien text;
+begin
+  if v_depot is null then raise exception 'TEL_INVALIDE_CI'; end if;
+  select depot_phone into v_ancien from public.settings where id;
+  update public.settings set depot_phone = v_depot, updated_at = now() where id;
+  insert into public.journal_actions (action, acteur_type, acteur_id, details)
+  values ('DEPOT_PHONE', 'admin', v, jsonb_build_object('ancien', v_ancien, 'nouveau', v_depot));
+end $$;
+
+-- ─── RPC : vérification de session (middleware Next.js) ─────────────────────
+-- Appelée côté serveur avant de servir un espace privé : le jeton est-il
+-- toujours celui de la dernière connexion pour ce rôle ? Ne renvoie qu'un booléen.
+create or replace function public.session_valide(p_role text, p_tel text, p_token text)
+returns boolean language plpgsql stable security definer set search_path = public as $$
+declare
+  v_tel  text := public.normalize_phone(p_tel);
+  v_hash text := public._hash_token(p_token);
+begin
+  if p_token is null or length(p_token) < 16 then return false; end if;
+  if p_role = 'admin' then
+    return exists (select 1 from public.admins where email = lower(btrim(p_tel)) and session_hash = v_hash);
+  elsif p_role = 'chauffeur' then
+    return exists (select 1 from public.tricycles where telephone = v_tel and session_hash = v_hash);
+  elsif p_role = 'client' then
+    return exists (select 1 from public.clients where telephone = v_tel and session_hash = v_hash);
+  end if;
+  return false;
+end $$;
+
+-- ─── RPC : statistiques annuelles (admin) ──────────────────────────────────
+-- Une seule requête pour toute la page /admin/statistiques. Les mois sont ceux
+-- de la date de commande (heure d'Abidjan). Filtres facultatifs : cité, chauffeur.
+--   ca              somme des prix des commandes LIVREE
+--   echecs          commandes encore actives dont le jour prévu est passé
+--   nouveaux        clients dont la toute première commande tombe dans le mois
+--   recurrents      clients ayant déjà commandé avant ce mois
+--   clients_plus_3  clients ayant passé plus de 3 commandes sur la période
+--   remboursements  points rendus aux clients (1 point = 1 FCFA) sur annulation
+create or replace function public.get_yearly_stats(
+  p_tel text, p_token text, year_param int,
+  p_cite uuid default null, p_tricycle uuid default null
+) returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v uuid := public._auth_admin(p_tel, p_token);
+  r jsonb;
+begin
+  with premiere as (
+    select client_id, min(created_at) as premiere from public.commandes group by client_id
+  ),
+  base as (
+    select c.id, c.client_id, c.tricycle_id, c.cite_id, c.lot_numero, c.status, c.source, c.prix,
+           c.quantite_bidons, c.scheduled_for, c.created_at, c.livree_at, p.premiere,
+           extract(year  from c.created_at at time zone 'Africa/Abidjan')::int as an,
+           extract(month from c.created_at at time zone 'Africa/Abidjan')::int as mois,
+           extract(month from p.premiere at time zone 'Africa/Abidjan')::int as mois_premiere,
+           extract(year  from p.premiere at time zone 'Africa/Abidjan')::int as an_premiere
+    from public.commandes c
+    join premiere p on p.client_id = c.client_id
+    where (p_cite is null or c.cite_id = p_cite)
+      and (p_tricycle is null or c.tricycle_id = p_tricycle)
+      and c.created_at >= make_timestamptz(year_param - 1, 1, 1, 0, 0, 0, 'Africa/Abidjan')
+      and c.created_at <  make_timestamptz(year_param + 1, 1, 1, 0, 0, 0, 'Africa/Abidjan')
+  ),
+  cur as (select * from base where an = year_param),
+  rembs as (
+    select b.mois, sum(pt.montant)::int as montant, count(*)::int as nb
+    from public.points_transactions pt
+    join cur b on b.id = pt.commande_id
+    where pt.type = 'REMBOURSEMENT' and pt.client_id is not null
+    group by b.mois
+  ),
+  plus3 as (
+    select mois, count(*)::int as nb from (
+      select mois, client_id from cur group by mois, client_id having count(*) > 3
+    ) x group by mois
+  ),
+  agg as (
+    select mois,
+           count(*)::int as total,
+           count(*) filter (where source = 'app')::int as app,
+           count(*) filter (where source = 'manual')::int as manual,
+           count(*) filter (where status = 'LIVREE')::int as livrees,
+           count(*) filter (where status = 'ANNULEE')::int as annulees,
+           count(*) filter (where status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
+                              and scheduled_for < public._today_abj())::int as echecs,
+           coalesce(sum(quantite_bidons) filter (where status = 'LIVREE'), 0)::int as bidons,
+           coalesce(sum(prix) filter (where status = 'LIVREE'), 0)::bigint as ca,
+           count(distinct client_id)::int as clients_uniques,
+           count(distinct client_id) filter (where an_premiere = an and mois_premiere = mois)::int as nouveaux,
+           count(distinct client_id) filter (where not (an_premiere = an and mois_premiere = mois))::int as recurrents,
+           round(avg(extract(epoch from livree_at - created_at) / 60)
+                 filter (where status = 'LIVREE' and livree_at is not null))::int as temps_moyen_min,
+           count(*) filter (where status = 'LIVREE' and livree_at is not null)::int as livrees_chronometrees
+    from cur group by mois
+  ),
+  mois_complets as (
+    select m.mois,
+           coalesce(a.total, 0) total, coalesce(a.app, 0) app, coalesce(a.manual, 0) manual,
+           coalesce(a.livrees, 0) livrees, coalesce(a.annulees, 0) annulees, coalesce(a.echecs, 0) echecs,
+           coalesce(a.bidons, 0) bidons, coalesce(a.ca, 0) ca,
+           coalesce(a.clients_uniques, 0) clients_uniques, coalesce(a.nouveaux, 0) nouveaux, coalesce(a.recurrents, 0) recurrents,
+           coalesce(p3.nb, 0) clients_plus_3,
+           a.temps_moyen_min, coalesce(a.livrees_chronometrees, 0) livrees_chronometrees,
+           coalesce(rb.montant, 0) remboursements_montant, coalesce(rb.nb, 0) remboursements_nb,
+           (select count(*)::int from base b where b.an = year_param - 1 and b.mois = m.mois) total_annee_precedente
+    from generate_series(1, 12) m(mois)
+    left join agg a on a.mois = m.mois
+    left join rembs rb on rb.mois = m.mois
+    left join plus3 p3 on p3.mois = m.mois
+  )
+  select jsonb_build_object(
+    'annee', year_param,
+    'mois', (select jsonb_agg(to_jsonb(mc) order by mc.mois) from mois_complets mc),
+    'synthese', jsonb_build_object(
+      'clients_actifs', (select count(distinct client_id) from cur),
+      'nouveaux', (select count(distinct client_id) from cur where an_premiere = year_param),
+      'clients_plus_3', (select count(*) from (select client_id from cur group by client_id having count(*) > 3) x),
+      'temps_moyen_min', (select round(avg(extract(epoch from livree_at - created_at) / 60))::int
+                            from cur where status = 'LIVREE' and livree_at is not null)
+    ),
+    'chauffeurs', (select coalesce(jsonb_agg(jsonb_build_object('id', x.tricycle_id, 'nom', x.nom, 'mois', x.mois, 'livraisons', x.n)), '[]'::jsonb)
+                   from (select b.tricycle_id, coalesce(t.nom, 'Chauffeur supprimé') nom, b.mois, count(*)::int n
+                           from cur b left join public.tricycles t on t.id = b.tricycle_id
+                          where b.status = 'LIVREE' group by 1, 2, 3) x),
+    'zones', (select coalesce(jsonb_agg(jsonb_build_object('cite_id', x.cite_id, 'cite_nom', x.nom, 'lot', x.lot_numero, 'mois', x.mois, 'total', x.n)), '[]'::jsonb)
+              from (select b.cite_id, ci.nom, b.lot_numero, b.mois, count(*)::int n
+                      from cur b join public.cites ci on ci.id = b.cite_id group by 1, 2, 3, 4) x),
+    'options', jsonb_build_object(
+      'cites', (select coalesce(jsonb_agg(jsonb_build_object('id', id, 'nom', nom) order by nom), '[]'::jsonb) from public.cites),
+      'chauffeurs', (select coalesce(jsonb_agg(jsonb_build_object('id', id, 'nom', nom, 'cite_id', cite_id) order by nom), '[]'::jsonb) from public.tricycles)
+    )
+  ) into r;
+  return r;
 end $$;
 
 -- ─── Droits d'exécution ────────────────────────────────────────────────────
@@ -888,6 +1656,10 @@ end $$;
 
 revoke execute on function public._hash_secret(uuid, text)   from public, anon, authenticated;
 revoke execute on function public._hash_token(text)          from public, anon, authenticated;
+revoke execute on function public._hash_pin(text)             from public, anon, authenticated;
+revoke execute on function public._secret_ok(uuid, text, text) from public, anon, authenticated;
+-- Création d'admin : SQL Editor uniquement, jamais depuis l'appli.
+revoke execute on function public.admin_definir(text, text)   from public, anon, authenticated;
 revoke execute on function public._new_token()                from public, anon, authenticated;
 revoke execute on function public._chauffeur_profil(uuid)    from public, anon, authenticated;
 revoke execute on function public._client_profil(uuid)       from public, anon, authenticated;
@@ -895,3 +1667,14 @@ revoke execute on function public._auth_tricycle(text, text) from public, anon, 
 revoke execute on function public._auth_client(text, text)   from public, anon, authenticated;
 revoke execute on function public._auth_admin(text, text)    from public, anon, authenticated;
 revoke execute on function public.notify_change()             from public, anon, authenticated;
+revoke execute on function public._prochain_8h()              from public, anon, authenticated;
+revoke execute on function public._distance_m(double precision, double precision, double precision, double precision) from public, anon, authenticated;
+-- Tâches cron : jamais appelables depuis l'appli (sinon n'importe qui pourrait
+-- reprogrammer toutes les commandes du jour).
+revoke execute on function public.rollover_queued_orders()    from public, anon, authenticated;
+revoke execute on function public.release_programmed_orders() from public, anon, authenticated;
+revoke execute on function public.purge_positions_live()      from public, anon, authenticated;
+revoke execute on function public._today_abj()                from public, anon, authenticated;
+revoke execute on function public._phone_ci(text)             from public, anon, authenticated;
+revoke execute on function public._debiter_chauffeur(uuid)    from public, anon, authenticated;
+revoke execute on function public._journaliser_facturation(uuid) from public, anon, authenticated;

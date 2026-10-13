@@ -2,9 +2,8 @@
 -- Clients et chauffeurs s'inscrivent eux-mêmes depuis /login (compte + PIN qu'ils
 -- choisissent) : ce seed ne crée que les cités et sources, pas de comptes.
 --
--- L'admin par défaut est créé automatiquement par schema.sql :
---   téléphone 0566036825, mot de passe admin123 — CHANGE-LE dès la première
---   connexion (onglet Sécurité de /admin).
+-- Aucun admin n'est créé automatiquement. Dans le SQL Editor :
+--   select public.admin_definir('07XXXXXXXX', 'un-mot-de-passe-long');
 
 insert into public.cites (nom) values ('Cité 1'), ('Cité 2'), ('Cité 3') on conflict do nothing;
 

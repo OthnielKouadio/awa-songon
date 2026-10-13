@@ -3,24 +3,24 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
 import { CustomSelect } from "@/components/CustomSelect";
-import { CustomMultiSelect } from "@/components/CustomMultiSelect";
-import { Btn, ErrorBox, Field, PinInput } from "@/components/ui";
-import { api } from "@/lib/api";
+import { Btn, ErrorBox, Field, PhoneInput, PinInput } from "@/components/ui";
+import { api } from "@/lib/data-provider";
 import { errorMessage } from "@/lib/errors";
-import { byNom, normalizePhone, onlyDigits, PRIX_DEFAUT, PRIX_MAX, PRIX_MIN, QUANTITE_L } from "@/lib/format";
-import { saveSession } from "@/lib/session";
-import type { Cite, Role, Source } from "@/lib/types";
+import { byNom, onlyDigits, PRIX_DEFAUT, PRIX_MAX, PRIX_MIN, QUANTITE_L } from "@/lib/format";
+import { phoneCI } from "@/lib/phone";
+import { CompteCree, erreurTelephone } from "./inscription";
+import type { Cite, Creds, Source } from "@/lib/types";
 
-/** Formulaire d'inscription chauffeur — utilisé sur /login (onglet Inscription)
- *  et sur /inscription?role=chauffeur. Jamais de <select> natif :
- *  - « Tes cités » (CustomMultiSelect, obligatoire, plusieurs possibles — un
- *    chauffeur peut livrer plusieurs cités à la fois) ;
+/** Formulaire d'inscription chauffeur — utilisé uniquement sur le lien de
+ *  recrutement privé (src/app/recrutement-chauffeur). Jamais de <select> natif :
+ *  - « Ta cité » (CustomSelect, obligatoire, UNE seule, définitive : il ne
+ *    livrera que les clients de cette cité) ;
  *  - « Ta source » (CustomSelect, FACULTATIVE — un chauffeur qui n'en choisit
- *    pas puise un peu partout), groupée par cité dès qu'il y en a plusieurs. */
-export default function ChauffeurSignupForm({ onSession }: { onSession: (role: Role) => void }) {
+ *    pas puise un peu partout), limitée aux forages de sa cité. */
+export default function ChauffeurSignupForm({ onSession }: { onSession: (creds: Creds) => Promise<void> }) {
   const [nom, setNom] = useState("");
   const [tel, setTel] = useState("");
-  const [citeIds, setCiteIds] = useState<string[]>([]);
+  const [citeId, setCiteId] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [prix, setPrix] = useState(String(PRIX_DEFAUT));
   const [pin, setPin] = useState("");
@@ -29,6 +29,7 @@ export default function ChauffeurSignupForm({ onSession }: { onSession: (role: R
   const [sources, setSources] = useState<Source[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [cree, setCree] = useState<string | null>(null); // compte créé, connexion auto échouée
 
   useEffect(() => {
     Promise.all([api.fetchCites(), api.fetchSources()])
@@ -39,37 +40,46 @@ export default function ChauffeurSignupForm({ onSession }: { onSession: (role: R
       .catch((e) => setError(errorMessage(e)));
   }, []);
 
-  function chooseCites(v: string[]) {
-    setCiteIds(v);
-    // la source doit appartenir à une des cités choisies : si elle n'en fait
-    // plus partie après ce changement, on l'efface.
-    setSourceId((prev) => {
-      const s = sources.find((x) => x.id === prev);
-      return s && v.includes(s.cite_id) ? prev : "";
-    });
+  function chooseCite(v: string) {
+    setCiteId(v);
+    // la source doit appartenir à la cité choisie : on l'efface si elle n'en fait plus partie.
+    setSourceId((prev) => (sources.find((x) => x.id === prev)?.cite_id === v ? prev : ""));
   }
 
-  const sourcesDesCites = sources.filter((s) => citeIds.includes(s.cite_id));
-  const citesChoisies = cites.filter((c) => citeIds.includes(c.id));
+  const sourcesDeLaCite = sources.filter((s) => s.cite_id === citeId);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    if (!nom.trim()) return setError("Entre ton nom.");
+    const errTel = erreurTelephone(tel);
+    const telCI = phoneCI(tel);
+    if (errTel || !telCI) return setError(errTel ?? "Numéro de téléphone invalide.");
     if (pin.length !== 4) return setError("Ton code doit faire 4 chiffres.");
     if (pin !== pin2) return setError("Les deux codes ne sont pas identiques.");
-    if (citeIds.length === 0) return setError("Choisis au moins une cité.");
+    if (!citeId) return setError("Choisis ta cité.");
     const p = Number(prix);
     if (!Number.isFinite(p) || p < PRIX_MIN || p > PRIX_MAX) return setError("Entre un prix valide (de 100 à 50 000 FCFA).");
     setBusy(true);
+    // 1) Création du compte : ses erreurs (numéro déjà inscrit, cité…) s'affichent telles quelles.
+    let s;
     try {
-      const s = await api.inscrireChauffeur({ nom, tel: normalizePhone(tel), citeIds, sourceId: sourceId || null, pin, prix: p });
-      saveSession(s.creds);
-      onSession("chauffeur");
+      s = await api.inscrireChauffeur({ nom, tel: telCI, citeId, sourceId: sourceId || null, pin, prix: p });
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);
+      return;
+    }
+    // 2) Connexion automatique : le compte existe déjà, un échec ici n'est pas un échec d'inscription.
+    try {
+      await onSession(s.creds);
+    } catch (err) {
+      setCree(errorMessage(err));
+      setBusy(false);
     }
   }
+
+  if (cree) return <CompteCree raison={cree} />;
 
   return (
     <form onSubmit={submit} className="brut space-y-5 p-5">
@@ -78,30 +88,27 @@ export default function ChauffeurSignupForm({ onSession }: { onSession: (role: R
       </Field>
 
       <Field label="Ton numéro de téléphone">
-        <input className="field" type="tel" inputMode="tel" autoComplete="tel" placeholder="07 00 00 00 00" value={tel} onChange={(e) => setTel(e.target.value)} required />
+        <PhoneInput value={tel} onChange={setTel} />
       </Field>
 
-      <Field label="Tes cités" hint="Tu peux en choisir plusieurs si tu livres à plusieurs endroits.">
-        <CustomMultiSelect
-          ariaLabel="Tes cités"
-          values={citeIds}
-          onChange={chooseCites}
-          placeholder="— Choisir mes cités —"
+      <Field label="Ta cité" hint="Une seule, et elle ne pourra plus être changée : tu livreras uniquement les clients de cette cité.">
+        <CustomSelect
+          ariaLabel="Ta cité"
+          value={citeId}
+          onChange={chooseCite}
+          placeholder="— Choisir ma cité —"
           options={cites.map((c) => ({ value: c.id, label: c.nom }))}
         />
       </Field>
 
-      <Field label="Ta source (facultatif)" hint={citeIds.length === 0 ? "Choisis d'abord au moins une cité." : "Si tu ne puises pas toujours au même endroit, laisse vide."}>
+      <Field label="Ta source (facultatif)" hint={!citeId ? "Choisis d'abord ta cité." : "Si tu ne puises pas toujours au même endroit, laisse vide."}>
         <CustomSelect
           ariaLabel="Ta source"
           value={sourceId}
           onChange={setSourceId}
-          placeholder={citeIds.length === 0 ? "— Choisis d'abord une cité —" : "— Aucune source fixe —"}
-          disabled={citeIds.length === 0}
-          groups={citesChoisies.map((c) => ({
-            label: c.nom,
-            options: sourcesDesCites.filter((s) => s.cite_id === c.id).map((s) => ({ value: s.id, label: s.nom })),
-          }))}
+          placeholder={!citeId ? "— Choisis d'abord ta cité —" : "— Aucune source fixe —"}
+          disabled={!citeId}
+          options={sourcesDeLaCite.map((s) => ({ value: s.id, label: s.nom }))}
         />
       </Field>
 

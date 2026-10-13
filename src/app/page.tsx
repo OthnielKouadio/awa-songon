@@ -4,8 +4,7 @@ import { motion } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { CustomModal } from "@/components/CustomModal";
-import { Icon, type IconName } from "@/components/icons";
+import { Icon } from "@/components/icons";
 import { Badge, Btn, Logo, Spinner } from "@/components/ui";
 import {
   BONUS_FIDELITE_POINTS,
@@ -15,45 +14,30 @@ import {
   formatFcfa,
   formatPoints,
   LIVRAISONS_ESSAI,
-  NUMERO_RECHARGE,
-  NUMERO_RECHARGE_2,
   POINTS_PAR_LIVRAISON,
   RECHARGE_MIN_FCFA,
   RECHARGE_MULTIPLE,
   SEUIL_FIDELITE,
 } from "@/lib/format";
-import { HOME } from "@/lib/session";
-import type { Role } from "@/lib/types";
-
-type RoleChoix = "client" | "chauffeur";
-type PopupIntent = "login" | "signup" | null;
+import { formatPhone } from "@/lib/phone";
+import { clearSession, openSession, readSession } from "@/lib/session";
+import { useDepotPhone } from "@/lib/useDepotPhone";
 
 export default function LandingPage() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
-  const [popup, setPopup] = useState<PopupIntent>(null);
 
   // Déjà connecté → direct sur son tableau de bord, pas la peine de revoir la vitrine.
   useEffect(() => {
-    let raw: string | null = null;
-    try {
-      raw = localStorage.getItem("awa:session:v4");
-    } catch {}
-    if (raw) {
-      try {
-        const c = JSON.parse(raw) as { role?: Role };
-        if (c.role) {
-          router.replace(HOME[c.role]);
-          return;
-        }
-      } catch {}
-    }
-    setChecking(false);
+    const c = readSession();
+    if (!c) return setChecking(false);
+    openSession(c)
+      .then((home) => router.replace(home))
+      .catch(() => {
+        clearSession();
+        setChecking(false);
+      });
   }, [router]);
-
-  function choisirRole(role: RoleChoix) {
-    router.push(popup === "login" ? `/login?role=${role}` : `/inscription?role=${role}`);
-  }
 
   if (checking) {
     return (
@@ -65,52 +49,32 @@ export default function LandingPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-5 sm:px-6">
-      <Header onLogin={() => setPopup("login")} onSignup={() => setPopup("signup")} />
+      <Header />
       <Hero />
       <CommentCaMarche />
       <SectionChauffeur />
       <Tarifs />
       <Faq />
       <Footer />
-
-      <CustomModal open={!!popup} onClose={() => setPopup(null)} title="Vous êtes Client ou Chauffeur ?">
-        <div className="space-y-3">
-          <RoleButton icon="home" title="Client" text="Je commande de l'eau pour mon lot." onClick={() => choisirRole("client")} />
-          <RoleButton icon="truck" title="Chauffeur" text="Je livre et je gagne des points." onClick={() => choisirRole("chauffeur")} />
-        </div>
-      </CustomModal>
     </main>
-  );
-}
-
-function RoleButton({ icon, title, text, onClick }: { icon: IconName; title: string; text: string; onClick: () => void }) {
-  return (
-    <button onClick={onClick} className="flex w-full items-center gap-4 rounded-2xl border-brut border-ink bg-white p-4 text-left transition-colors hover:bg-sky">
-      <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-azur text-white">
-        <Icon name={icon} size={24} />
-      </span>
-      <span>
-        <span className="block font-display text-lg font-bold uppercase tracking-tight">{title}</span>
-        <span className="block text-sm font-medium text-ink/60">{text}</span>
-      </span>
-      <Icon name="arrow" size={20} className="ml-auto shrink-0 text-azur" />
-    </button>
   );
 }
 
 // ─── Header ─────────────────────────────────────────────────────────────────
 
-function Header({ onLogin, onSignup }: { onLogin: () => void; onSignup: () => void }) {
+// Connexion et inscription directes : plus de popup « Client ou Chauffeur ? »
+// (les chauffeurs sont recrutés par lien privé, l'admin a sa propre page).
+function Header() {
   return (
     <header className="flex items-center justify-between gap-3">
       <Logo href="/" />
       <div className="flex items-center gap-2">
-        <button onClick={onLogin} className="rounded-xl border-brut border-ink bg-white px-3 py-2 text-sm font-bold transition-colors hover:bg-sky">
+        <Link href="/login" className="rounded-xl border-brut border-ink bg-white px-3 py-2 text-sm font-bold transition-colors hover:bg-sky">
           Se connecter
-        </button>
-        <Btn onClick={onSignup} className="!px-3 !py-2 text-sm">
-          S&apos;inscrire
-        </Btn>
+        </Link>
+        <Link href="/inscription">
+          <Btn className="!px-3 !py-2 text-sm">S&apos;inscrire</Btn>
+        </Link>
       </div>
     </header>
   );
@@ -127,14 +91,9 @@ function Hero() {
         Commandez votre eau potable en 30 secondes. Un chauffeur de tricycle proche vous livre directement sur votre lot en moins d&apos;une heure.
       </p>
       <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:justify-center">
-        <Link href="/inscription?role=client">
+        <Link href="/inscription">
           <Btn variant="ink" size="lg" className="w-full sm:w-auto">
             <Icon name="drop" size={20} /> Commander mon eau
-          </Btn>
-        </Link>
-        <Link href="/inscription?role=chauffeur">
-          <Btn variant="white" size="lg" className="w-full sm:w-auto">
-            <Icon name="truck" size={20} /> Devenir chauffeur
           </Btn>
         </Link>
       </div>
@@ -256,7 +215,7 @@ function Tarifs() {
 const FAQ_ITEMS = [
   {
     q: `Que se passe-t-il après mes ${formatPoints(BONUS_INSCRIPTION)} gratuits ?`,
-    r: "Votre compte passe OFF. Il faut recharger pour recevoir à nouveau des commandes.",
+    r: "Votre compte est suspendu : vous n'apparaissez plus aux clients. Il faut recharger pour recevoir à nouveau des commandes.",
   },
   {
     q: `Le bonus des ${formatPoints(SEUIL_FIDELITE)} est automatique ?`,
@@ -283,14 +242,15 @@ function Faq() {
 // ─── Footer ─────────────────────────────────────────────────────────────────
 
 function Footer() {
+  const depot = useDepotPhone();
   return (
     <footer className="mt-16 pb-4 text-center">
       <Logo href="/" />
       <p className="mt-3 font-medium text-ink/60">Distribution Eau — La solution d&apos;eau potable à domicile</p>
       <p className="mt-1.5 text-sm font-bold text-ink/50">
-        Contact : {NUMERO_RECHARGE} · {NUMERO_RECHARGE_2}
+        Contact : {depot ? formatPhone(depot) : "…"}
       </p>
-      <Link href="/inscription?role=client" className="mt-6 inline-block">
+      <Link href="/inscription" className="mt-6 inline-block">
         <Btn variant="ink" size="lg">
           <Icon name="drop" size={20} /> Commander mon eau maintenant
         </Btn>

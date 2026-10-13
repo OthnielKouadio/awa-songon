@@ -1,9 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { api, isDemo } from "@/lib/api";
+import { api, isDemoMode, resetDemoData } from "@/lib/data-provider";
 import { errorMessage } from "@/lib/errors";
-import { resetMock } from "@/lib/mock";
 import type { Creds } from "@/lib/types";
 import { useConfirm } from "../CustomModal";
 import { Icon } from "../icons";
@@ -22,7 +21,7 @@ export default function SecuritePanel({ creds, reload }: { creds: Creds; reload:
     e.preventDefault();
     setError("");
     setOk(false);
-    if (nouveau.length < 6) return setError("Choisis un mot de passe d'au moins 6 caractères.");
+    if (nouveau.length < 10) return setError("Choisis un mot de passe d'au moins 10 caractères.");
     if (nouveau !== confirme) return setError("Les deux mots de passe ne sont pas identiques.");
     setBusy(true);
     try {
@@ -40,7 +39,7 @@ export default function SecuritePanel({ creds, reload }: { creds: Creds; reload:
   return (
     <Panel title="Sécurité">
       <p className="mb-5 max-w-lg text-sm font-medium text-ink/60">
-        Numéro admin : <strong>{creds.tel}</strong>. Si tu utilises encore le mot de passe par défaut (<code>admin123</code>), change-le maintenant.
+        Compte admin : <strong>{creds.tel}</strong>. Choisis un mot de passe long (10 caractères minimum) que tu n&apos;utilises nulle part ailleurs.
       </p>
       <form onSubmit={submit} className="max-w-sm space-y-5">
         <Field label="Nouveau mot de passe">
@@ -60,17 +59,17 @@ export default function SecuritePanel({ creds, reload }: { creds: Creds; reload:
         </Btn>
       </form>
 
-      {isDemo && (
+      {isDemoMode && (
         <div className="mt-8 max-w-sm border-t-2 border-ink/10 pt-6">
           <p className="mb-3 text-sm font-medium text-ink/60">
-            Mode démo : remet les cités, sources, chauffeurs, clients et commandes à leur état d&apos;origine (efface tes propres essais, y compris ce compte admin — mot de passe <code>admin123</code>).
+            Mode démo : remet les cités, sources, chauffeurs, clients et commandes à leur état d&apos;origine (efface tes propres essais ; le compte admin démo reprend les identifiants NEXT_PUBLIC_DEMO_ADMIN_*).
           </p>
           <Btn
             variant="danger"
             onClick={async () => {
               const ok = await confirm("Tu seras déconnecté.", { title: "Réinitialiser toutes les données de démo ?", danger: true, confirmLabel: "Réinitialiser" });
               if (!ok) return;
-              resetMock();
+              resetDemoData();
               void reload();
             }}
           >

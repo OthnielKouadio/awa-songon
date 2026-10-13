@@ -3,29 +3,52 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useConfirm } from "@/components/CustomModal";
 import { Icon } from "@/components/icons";
 import MapLazy from "@/components/MapLazy";
 import { Toast } from "@/components/Toast";
-import { Badge, Btn, CloseButton, ErrorBox, LinkBtn, Logo, Modal, PulseDot, Spinner, StatutBadge } from "@/components/ui";
-import { api } from "@/lib/api";
+import ManualOrderModal from "@/components/ManualOrderModal";
+import {
+  Badge,
+  Btn,
+  CiteBadge,
+  CloseButton,
+  CommandeBadge,
+  ErrorBox,
+  LinkBtn,
+  Logo,
+  Modal,
+  PulseDot,
+  SegmentedFilter,
+  SourceBadge,
+  Spinner,
+  StatutBadge,
+} from "@/components/ui";
+import { usePrivateBase } from "@/components/PrivateBase";
+import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
 import {
-  callLink,
+  FILTRES_SOURCE,
+  type FiltreSource,
   formatFcfa,
   formatPoints,
+  formatProgrammee,
   heure,
   navigationLink,
-  NUMERO_RECHARGE,
   onlyDigits,
+  PARTAGE_GPS_MAX_MS,
   PRIX_MAX,
   PRIX_MIN,
   QUANTITE_L,
   RECHARGE_MIN_FCFA,
   SOLDE_MIN,
 } from "@/lib/format";
+import { callLink, formatPhone } from "@/lib/phone";
 import { clearSession, readSession } from "@/lib/session";
 import { playNotification, unlockAudio } from "@/lib/sound";
-import type { ChauffeurCommande, ChauffeurProfile, Creds } from "@/lib/types";
+import type { ChauffeurCommande, ChauffeurProfile, Creds, TricycleStatus } from "@/lib/types";
+import { useDepotPhone } from "@/lib/useDepotPhone";
+import { useEssaiGratuit } from "@/lib/useEssaiGratuit";
 import { useGeoWatch } from "@/lib/useGeoWatch";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 
@@ -33,6 +56,7 @@ const SOUND_KEY = "awa:sound";
 
 export default function ChauffeurPage() {
   const router = useRouter();
+  const base = usePrivateBase();
   const [creds, setCreds] = useState<Creds | null | undefined>(undefined);
 
   useEffect(() => {
@@ -59,16 +83,22 @@ export default function ChauffeurPage() {
   if (!creds) return null;
 
   return (
-    <main className="mx-auto max-w-2xl px-4 pb-24 pt-5 sm:px-6" onPointerDown={unlockAudio}>
+    <main className="mx-auto max-w-2xl px-4 pb-16 pt-5 sm:px-6" onPointerDown={unlockAudio}>
       <header>
-        <Logo href="/chauffeur" />
+        <Logo href={base} />
       </header>
       <Dashboard creds={creds} onLogout={logout} />
     </main>
   );
 }
 
+/** Le partage GPS d'une commande ARRIVING est-il encore dans sa fenêtre de 10 min ? */
+const partageActif = (c: ChauffeurCommande | undefined, now: number) =>
+  !!c && c.status === "ARRIVING" && !!c.arriving_at && now - new Date(c.arriving_at).getTime() < PARTAGE_GPS_MAX_MS;
+
 function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
+  const depot = useDepotPhone();
+  const essai = useEssaiGratuit();
   const [profile, setProfile] = useState<ChauffeurProfile | null>(null);
   const [file, setFile] = useState<ChauffeurCommande[]>([]);
   const [error, setError] = useState("");
@@ -79,14 +109,18 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const [prixDirty, setPrixDirty] = useState(false);
   const [prixSaved, setPrixSaved] = useState(false);
   const [bonusToast, setBonusToast] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const [manuelOpen, setManuelOpen] = useState(false);
+  const [filtre, setFiltre] = useState<FiltreSource>("all");
+  const { confirm, ConfirmDialog } = useConfirm();
   const knownIds = useRef<Set<string> | null>(null);
   const soundRef = useRef(true);
   const prixDirtyRef = useRef(false);
-  // Les points sont désormais déduits à la CRÉATION de la commande (côté
-  // client), pas quand ce chauffeur clique "Je pars livrer" : le bonus
-  // fidélité peut donc arriver entre deux chargements, sans action de sa part.
-  // On le détecte en comparant total_points_utilises d'un chargement à l'autre
-  // (il ne repasse à 0 QUE via ce bonus, jamais via une recharge admin).
+  // Les points sont déduits à la CRÉATION de la commande (côté client), pas
+  // quand ce chauffeur clique "Je pars livrer" : le bonus fidélité peut donc
+  // arriver entre deux chargements, sans action de sa part. On le détecte en
+  // comparant total_points_utilises d'un chargement à l'autre (il ne repasse à
+  // 0 QUE via ce bonus, jamais via une recharge admin).
   const prevTotalUtilise = useRef<number | null>(null);
 
   useEffect(() => {
@@ -128,14 +162,25 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   useLiveRefresh([profile ? `tricycle:${profile.id}` : null], load, 8000);
 
-  // Suivi GPS live : dès que le tableau de bord est ouvert, on envoie la
-  // position toutes les ~5s pour que le client suive le tricycle sur sa carte.
-  // Best-effort : une position ratée ne doit jamais bloquer/afficher d'erreur.
+  // GPS live : UNIQUEMENT après « J'arrive chez toi », 10 min max. Le hook
+  // throttle lui-même (10 s s'il bouge, 30 s s'il avance peu, rien à l'arrêt)
+  // et coupe dès que le serveur répond actif: false (livré, fenêtre dépassée).
+  const arriving = file.find((c) => c.status === "ARRIVING");
+  const gpsOn = partageActif(arriving, now);
+  useEffect(() => {
+    if (!arriving) return;
+    const t = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, [arriving]);
   useGeoWatch(
+    gpsOn,
+    arriving?.id ?? null,
     useCallback(
-      (lat, lng) => {
-        void api.chauffeurSetPosition(creds, lat, lng).catch(() => {});
-      },
+      (lat: number, lng: number) =>
+        api
+          .chauffeurSetPosition(creds, lat, lng)
+          .then((r) => r.actif)
+          .catch(() => true), // erreur réseau ponctuelle : on continue d'essayer
       [creds]
     )
   );
@@ -150,7 +195,18 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
       setError(errorMessage(e));
     } finally {
       setBusy(false);
+      setNow(Date.now());
     }
+  }
+
+  const setStatus = (s: TricycleStatus) => act(() => api.chauffeurSetStatus(creds, s));
+
+  async function passerOffline() {
+    const ok = await confirm(
+      "Tu restes visible : les clients pourront toujours commander, mais leurs commandes seront programmées pour demain 8h.\nTa file actuelle reste à livrer.",
+      { title: "Sûr de vouloir passer hors ligne ?", confirmLabel: "Passer hors ligne" }
+    );
+    if (ok) void setStatus("OFFLINE");
   }
 
   async function savePrix(e: React.FormEvent) {
@@ -191,37 +247,44 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           </span>
           <p className="title-md mt-4">Solde épuisé</p>
           <p className="mt-2 font-medium text-ink/60">
-            Rechargez par Wave au <strong>{NUMERO_RECHARGE}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
+            Rechargez par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
           </p>
           <div className="mt-5 inline-flex items-center gap-2 rounded-full border-[1.5px] border-danger bg-danger/10 px-4 py-2 font-bold text-danger">
             Solde actuel : {formatPoints(profile.solde_points)}
           </div>
-          <LinkBtn href={callLink(NUMERO_RECHARGE)} variant="ink" size="lg" className="mt-6 w-full">
-            <Icon name="phone" size={20} /> Appeler pour recharger
-          </LinkBtn>
+          {depot && (
+            <LinkBtn href={callLink(depot)} variant="ink" size="lg" className="mt-6 w-full">
+              <Icon name="phone" size={20} /> Appeler pour recharger
+            </LinkBtn>
+          )}
         </div>
       </div>
     );
   }
 
-  const dispo = profile.status === "DISPO";
   const bloque = profile.statut === "BLOQUE";
-  const enCours = file.find((c) => c.status === "EN_COURS");
-  const premier = file.find((c) => c.status === "EN_ATTENTE");
+  const visibles = filtre === "all" ? file : file.filter((c) => c.source === filtre);
+  const enCours = file.find((c) => c.status === "EN_COURS" || c.status === "ARRIVING");
+  const premier = file.find((c) => c.status === "ASSIGNED");
   const aLaSource = profile.etat === "A_LA_SOURCE";
 
   return (
-    <div className="mt-10 space-y-7">
+    <div className="mt-8 space-y-7">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="label !mb-1">
-            {profile.cites.map((c) => c.nom).join(", ")}
+        <div className="min-w-0">
+          <CiteBadge>
+            Tu livres à {profile.cite_nom}
             {profile.source_nom ? ` · ${profile.source_nom}` : ""}
-          </p>
-          <h1 className="title-lg">{profile.nom}</h1>
+          </CiteBadge>
+          <h1 className="title-lg mt-2">{profile.nom}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <StatutBadge statut={profile.statut} />
-            <Badge tone={profile.solde_points < SOLDE_MIN * 4 ? "danger" : "sky"}>{formatPoints(profile.solde_points)}</Badge>
+            {essai === true && <Badge tone="sky">Essai gratuit</Badge>}
+            {essai === false && (
+              <>
+                <StatutBadge statut={profile.statut} />
+                <Badge tone={profile.solde_points < SOLDE_MIN * 4 ? "danger" : "sky"}>{formatPoints(profile.solde_points)}</Badge>
+              </>
+            )}
           </div>
         </div>
         <div className="flex gap-2">
@@ -253,13 +316,134 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
         </div>
       )}
 
-      {/* GROS TOGGLE DISPO / OFF */}
-      <DispoToggle dispo={dispo} disabled={busy || bloque} onToggle={() => act(() => api.chauffeurSetStatus(creds, dispo ? "OFF" : "DISPO"))} />
-      <p className="-mt-3 text-center text-sm font-medium text-ink/55">
-        {dispo
-          ? "Les clients de ta cité te voient et peuvent commander."
-          : "Tu es invisible : plus de nouvelle commande. Ta file actuelle reste à livrer."}
-      </p>
+      {/* EN HAUT : gros bouton PAUSE (orange) / REPRENDRE (vert) */}
+      {!bloque && <PauseButton status={profile.status} disabled={busy} onChange={setStatus} />}
+
+      {!bloque && (
+        <Btn variant="ink" size="lg" className="w-full" disabled={busy} onClick={() => setManuelOpen(true)}>
+          <Icon name="plus" size={20} /> Nouvelle commande - Saisie directe
+        </Btn>
+      )}
+
+      {/* CENTRE : file d'attente */}
+      <section>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="title-md">Commandes en file d&apos;attente ({file.length})</h2>
+          <SegmentedFilter
+            ariaLabel="Filtrer par origine"
+            value={filtre}
+            onChange={setFiltre}
+            options={FILTRES_SOURCE.map((f) => ({ ...f, count: f.id === "all" ? file.length : file.filter((c) => c.source === f.id).length }))}
+          />
+        </div>
+
+        <div className="brut mb-5 grid gap-3 p-4 sm:grid-cols-2">
+          <Btn variant={aLaSource ? "white" : "azur"} disabled={busy || aLaSource} onClick={() => act(() => api.chauffeurSetEtat(creds, "A_LA_SOURCE"))}>
+            <Icon name="drop" size={18} /> Je suis à la source
+          </Btn>
+          <Btn variant="ink" disabled={busy || !premier || !!enCours} onClick={() => act(() => api.chauffeurPartir(creds).then(() => {}))}>
+            <Icon name="truck" size={18} /> Je pars livrer {premier ? `N°${premier.position_file}` : ""}
+          </Btn>
+        </div>
+
+        {visibles.length === 0 ? (
+          <div className="brut-sm p-8 text-center font-semibold text-ink/60">
+            <Icon name="drop" size={32} className="mx-auto mb-2 text-azur" />
+            {file.length === 0 ? "Aucune commande pour l'instant." : "Aucune commande pour ce filtre."}
+          </div>
+        ) : (
+          <ul className="space-y-4">
+            <AnimatePresence mode="popLayout">
+              {visibles.map((c) => (
+                <motion.li
+                  key={c.id}
+                  layout
+                  initial={{ opacity: 0, y: 28 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, x: 60 }}
+                  transition={{ type: "spring", stiffness: 220, damping: 28 }}
+                  className={`brut p-4 ${c.status === "EN_COURS" || c.status === "ARRIVING" ? "!border-azur !bg-sky" : ""} ${
+                    c.status === "QUEUED" || c.status === "PROGRAMMED" ? "opacity-80" : ""
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-display text-3xl font-bold leading-none">
+                        N°{c.position_file} · Lot {c.lot_numero}
+                      </p>
+                      <p className="mt-2.5 text-lg font-bold">
+                        {c.client_nom} · {c.quantite_bidons ? `${c.quantite_bidons} bidon${c.quantite_bidons > 1 ? "s" : ""}` : `${QUANTITE_L}L`}
+                      </p>
+                      {c.source === "manual" && (
+                        <p className="text-sm font-medium text-ink/55">
+                          Ajouté par {c.added_by_nom ?? "un chauffeur"} à {heure(c.created_at)}
+                          {c.is_temporary_client && " · client sans compte"}
+                        </p>
+                      )}
+                      <p className="text-sm font-medium text-ink/55">
+                        {c.source === "app" && `reçue à ${heure(c.created_at)}`}
+                        {c.status === "QUEUED" && " · à livrer aujourd'hui"}
+                        {c.status === "PROGRAMMED" && ` · programmée ${formatProgrammee(c.programmee_pour)}`}
+                      </p>
+                      {c.note && <p className="mt-1 text-sm text-ink/70">Note : {c.note}</p>}
+                    </div>
+                    <div className="flex flex-col items-end gap-2">
+                      <SourceBadge source={c.source} />
+                      <CommandeBadge status={c.status} />
+                      {c.lat != null ? (
+                        <Badge tone="sky">
+                          <Icon name="pin" size={12} /> GPS précis
+                        </Badge>
+                      ) : (
+                        <Badge tone="gray">Lot seul</Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <LinkBtn href={callLink(c.client_tel)} variant="white" className="col-span-2">
+                      <Icon name="phone" size={18} className="text-azur" /> Appeler {c.client_nom} {c.client_tel}
+                    </LinkBtn>
+                    {c.lat != null && c.long != null ? (
+                      <>
+                        <LinkBtn href={navigationLink(c.lat, c.long)} target="_blank" rel="noopener noreferrer" variant="azur">
+                          <Icon name="nav" size={18} /> Naviguer
+                        </LinkBtn>
+                        <Btn variant="white" onClick={() => setMapFor(c)}>
+                          <Icon name="map" size={18} className="text-azur" /> Voir sur carte
+                        </Btn>
+                      </>
+                    ) : null}
+                  </div>
+
+                  {c.status === "EN_COURS" && (
+                    <Btn variant="azur" size="lg" className="mt-3 w-full" disabled={busy} onClick={() => act(() => api.chauffeurArriver(creds, c.id))}>
+                      <Icon name="pin" size={20} /> J&apos;ARRIVE CHEZ TOI
+                    </Btn>
+                  )}
+                  {c.status === "ARRIVING" && (
+                    <p className="mt-3 flex items-center justify-center gap-2 rounded-2xl border-[1.5px] border-azur bg-white px-3 py-2 text-sm font-bold text-azur">
+                      {partageActif(c, now) ? (
+                        <>
+                          <PulseDot /> Position partagée avec {c.client_nom} · coupure auto dans{" "}
+                          {Math.max(1, Math.ceil((PARTAGE_GPS_MAX_MS - (now - new Date(c.arriving_at!).getTime())) / 60000))} min
+                        </>
+                      ) : (
+                        "Partage de position terminé (10 min)"
+                      )}
+                    </p>
+                  )}
+                  {(c.status === "EN_COURS" || c.status === "ARRIVING") && (
+                    <Btn variant="ink" size="lg" className="mt-3 w-full" disabled={busy} onClick={() => act(() => api.chauffeurLivrer(creds, c.id))}>
+                      <Icon name="check" size={20} /> Livré
+                    </Btn>
+                  )}
+                </motion.li>
+              ))}
+            </AnimatePresence>
+          </ul>
+        )}
+      </section>
 
       {/* PRIX POUR 1000L */}
       <form onSubmit={savePrix} className="brut p-4">
@@ -295,106 +479,18 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
         </p>
       </form>
 
-      {/* ÉTAT */}
-      <div className="brut space-y-4 p-4">
-        <div className="flex items-center justify-between">
-          <span className="label !mb-0">Ton tricycle</span>
-          <Badge tone={aLaSource ? "sky" : "azur"}>
-            <PulseDot color={aLaSource ? "#0096FF" : "#FFFFFF"} pulse={!aLaSource} />
-            {aLaSource ? "À la source" : "En route"}
-          </Badge>
+      {/* TOUT EN BAS : OFFLINE, discret */}
+      {!bloque && profile.status !== "OFFLINE" && (
+        <div className="pt-6 text-center">
+          <button
+            onClick={passerOffline}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-xl border-[1.5px] border-steel bg-white px-3 py-1.5 text-xs font-bold text-ink/50 transition-colors hover:border-ink/40 hover:text-ink/70 disabled:opacity-40"
+          >
+            <Icon name="power" size={13} /> OFFLINE
+          </button>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Btn variant={aLaSource ? "white" : "azur"} size="lg" disabled={busy || aLaSource} onClick={() => act(() => api.chauffeurSetEtat(creds, "A_LA_SOURCE"))}>
-            <Icon name="drop" size={20} /> Je suis à la source
-          </Btn>
-          <Btn variant="ink" size="lg" disabled={busy || !premier || !!enCours} onClick={() => act(() => api.chauffeurPartir(creds).then(() => {}))}>
-            <Icon name="truck" size={20} /> Je pars livrer N°{premier?.position_file ?? 1}
-          </Btn>
-        </div>
-      </div>
-
-      {/* FILE D'ATTENTE */}
-      <section>
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="title-md">File d&apos;attente</h2>
-          <Badge tone="ink">
-            {file.length} commande{file.length > 1 ? "s" : ""}
-          </Badge>
-        </div>
-
-        {file.length === 0 ? (
-          <div className="brut-sm p-8 text-center font-semibold text-ink/60">
-            <Icon name="drop" size={32} className="mx-auto mb-2 text-azur" />
-            Aucune commande pour l&apos;instant.
-            {!dispo && <span className="mt-1 block text-sm">Passe DISPO pour en recevoir.</span>}
-          </div>
-        ) : (
-          <ul className="space-y-4">
-            <AnimatePresence mode="popLayout">
-              {file.map((c) => (
-                <motion.li
-                  key={c.id}
-                  layout
-                  initial={{ opacity: 0, y: 28 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, x: 60 }}
-                  transition={{ type: "spring", stiffness: 220, damping: 28 }}
-                  className={`brut p-4 ${c.status === "EN_COURS" ? "!border-azur !bg-sky" : ""}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-display text-3xl font-bold leading-none">
-                        N°{c.position_file} · Lot {c.lot_numero}
-                      </p>
-                      <p className="mt-2.5 text-lg font-bold">
-                        {c.client_nom} · {QUANTITE_L}L
-                      </p>
-                      <p className="text-sm font-medium text-ink/55">reçue à {heure(c.created_at)}</p>
-                    </div>
-                    <div className="flex flex-col items-end gap-2">
-                      {c.status === "EN_COURS" && (
-                        <Badge tone="azur">
-                          <PulseDot color="#FFFFFF" /> En livraison
-                        </Badge>
-                      )}
-                      {c.lat != null ? (
-                        <Badge tone="sky">
-                          <Icon name="pin" size={12} /> GPS précis
-                        </Badge>
-                      ) : (
-                        <Badge tone="gray">Lot seul</Badge>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="mt-4 grid grid-cols-2 gap-2">
-                    <LinkBtn href={callLink(c.client_tel)} variant="white" className="col-span-2">
-                      <Icon name="phone" size={18} className="text-azur" /> Appeler {c.client_nom} {c.client_tel}
-                    </LinkBtn>
-                    {c.lat != null && c.long != null ? (
-                      <>
-                        <LinkBtn href={navigationLink(c.lat, c.long)} target="_blank" rel="noopener noreferrer" variant="azur">
-                          <Icon name="nav" size={18} /> Naviguer
-                        </LinkBtn>
-                        <Btn variant="white" onClick={() => setMapFor(c)}>
-                          <Icon name="map" size={18} className="text-azur" /> Voir sur carte
-                        </Btn>
-                      </>
-                    ) : null}
-                  </div>
-
-                  {c.status === "EN_COURS" && (
-                    <Btn variant="ink" size="lg" className="mt-3 w-full" disabled={busy} onClick={() => act(() => api.chauffeurLivrer(creds, c.id))}>
-                      <Icon name="check" size={20} /> Livré
-                    </Btn>
-                  )}
-                </motion.li>
-              ))}
-            </AnimatePresence>
-          </ul>
-        )}
-      </section>
+      )}
 
       <Modal open={!!mapFor} onClose={() => setMapFor(null)} wide>
         {mapFor && mapFor.lat != null && mapFor.long != null && (
@@ -414,47 +510,48 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
         )}
       </Modal>
 
+      <ManualOrderModal
+        open={manuelOpen}
+        creds={creds}
+        citeNom={profile.cite_nom}
+        prix={profile.prix_1000}
+        onClose={() => setManuelOpen(false)}
+        onCreated={() => {
+          setManuelOpen(false);
+          void load();
+        }}
+      />
+      {ConfirmDialog}
       <Toast open={bonusToast}>Bravo ! 1 livraison gratuite offerte (+50 pts)</Toast>
     </div>
   );
 }
 
-// ─── Gros toggle DISPO (bleu qui pulse) / OFF (gris) ───────────────────────
+// ─── Gros bouton PAUSE (orange) / REPRENDRE (vert) ─────────────────────────
 
-function DispoToggle({ dispo, disabled, onToggle }: { dispo: boolean; disabled: boolean; onToggle: () => void }) {
+const STATUS_TEXTE: Record<TricycleStatus, string> = {
+  ACTIVE: "Tu es actif : les nouvelles commandes arrivent directement dans ta file.",
+  PAUSED: "En pause : les nouvelles commandes attendent (livrées aujourd'hui). Elles te seront toutes assignées quand tu reprends.",
+  OFFLINE: "Hors ligne : tu restes visible, les nouvelles commandes sont programmées pour demain 8h.",
+};
+
+function PauseButton({ status, disabled, onChange }: { status: TricycleStatus; disabled: boolean; onChange: (s: TricycleStatus) => void }) {
+  const actif = status === "ACTIVE";
   return (
-    <div className="relative">
-      {dispo && (
-        <motion.span
-          aria-hidden
-          className="absolute inset-0 rounded-full bg-azur"
-          animate={{ scale: [1, 1.09], opacity: [0.45, 0] }}
-          transition={{ repeat: Infinity, duration: 1.8, ease: "easeOut" }}
-        />
-      )}
+    <div>
       <motion.button
         type="button"
-        role="switch"
-        aria-checked={dispo}
-        aria-label={dispo ? "Passer OFF" : "Passer DISPO"}
         disabled={disabled}
-        onClick={onToggle}
-        whileTap={{ scale: 0.98 }}
-        animate={{ backgroundColor: dispo ? "#0096FF" : "#C9D5E3" }}
-        transition={{ duration: 0.3 }}
-        className="relative flex h-28 w-full items-center rounded-full border-brut border-ink p-3 shadow-hard disabled:opacity-70"
+        onClick={() => onChange(actif ? "PAUSED" : "ACTIVE")}
+        whileTap={{ x: 3, y: 3, boxShadow: "0px 0px 0px #0A1931" }}
+        animate={{ backgroundColor: actif ? "#F28C28" : "#1FA35B" }}
+        transition={{ duration: 0.25 }}
+        className="flex h-24 w-full items-center justify-center gap-4 rounded-full border-brut border-ink font-display text-4xl font-bold tracking-tight text-white shadow-hard disabled:opacity-60 sm:text-5xl"
       >
-        <span className={`flex-1 text-center font-display text-5xl font-bold tracking-tight ${dispo ? "pr-24 text-white" : "pl-24 text-ink/60"}`}>
-          {dispo ? "DISPO" : "OFF"}
-        </span>
-        <motion.span
-          className="absolute top-3 grid h-[76px] w-[76px] place-items-center rounded-full border-brut border-ink bg-white"
-          animate={{ left: dispo ? "calc(100% - 88px)" : "12px" }}
-          transition={{ type: "spring", stiffness: 380, damping: 32 }}
-        >
-          <Icon name={dispo ? "truck" : "power"} size={32} className={dispo ? "text-azur" : "text-ink/60"} />
-        </motion.span>
+        <Icon name={actif ? "pause" : "play"} size={40} fill />
+        {actif ? "PAUSE" : "REPRENDRE"}
       </motion.button>
+      <p className="mt-3 text-center text-sm font-medium text-ink/55">{STATUS_TEXTE[status]}</p>
     </div>
   );
 }

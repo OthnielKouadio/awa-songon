@@ -2,36 +2,20 @@
 
 import { motion } from "framer-motion";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense } from "react";
-import ChauffeurSignupForm from "@/components/auth/ChauffeurSignupForm";
+import { useRouter } from "next/navigation";
 import ClientSignupForm from "@/components/auth/ClientSignupForm";
 import { Icon } from "@/components/icons";
-import { Badge, Logo, Spinner } from "@/components/ui";
-import { HOME } from "@/lib/session";
-import type { Role } from "@/lib/types";
+import { Badge, Logo } from "@/components/ui";
+import { openSession } from "@/lib/session";
+import type { Creds } from "@/lib/types";
 
-const CONTENT: Record<"client" | "chauffeur", { badge: string; title: string }> = {
-  client: { badge: "Espace client", title: "Crée ton compte client" },
-  chauffeur: { badge: "Espace chauffeur", title: "Crée ton compte chauffeur" },
-};
-
+/** Inscription publique : clients uniquement. Les chauffeurs s'inscrivent par le
+ *  lien de recrutement privé que l'admin leur envoie (DRIVER_SIGNUP_PATH). */
 export default function InscriptionPage() {
-  return (
-    <Suspense fallback={<main className="mx-auto flex min-h-dvh max-w-md items-center justify-center px-4"><Spinner /></main>}>
-      <InscriptionContent />
-    </Suspense>
-  );
-}
-
-function InscriptionContent() {
   const router = useRouter();
-  const params = useSearchParams();
-  const role: "client" | "chauffeur" = params.get("role") === "chauffeur" ? "chauffeur" : "client";
-  const c = CONTENT[role];
 
-  function onSession(r: Role) {
-    router.push(HOME[r]);
+  async function onSession(creds: Creds) {
+    router.push(await openSession(creds));
   }
 
   return (
@@ -41,11 +25,11 @@ function InscriptionContent() {
       </header>
 
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-        <Badge tone="sky">{c.badge}</Badge>
-        <h1 className="title-lg mt-4 !text-3xl sm:!text-4xl">{c.title}</h1>
+        <Badge tone="sky">Espace client</Badge>
+        <h1 className="title-lg mt-4 !text-3xl sm:!text-4xl">Crée ton compte client</h1>
 
         <div className="mt-6">
-          {role === "client" ? <ClientSignupForm onSession={onSession} /> : <ChauffeurSignupForm onSession={onSession} />}
+          <ClientSignupForm onSession={onSession} />
         </div>
 
         <div className="mt-6 text-center">
