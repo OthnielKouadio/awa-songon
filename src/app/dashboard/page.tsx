@@ -3,8 +3,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import SideMenu from "@/components/SideMenu";
-import { ConsoMoisCard, HistoriqueModal } from "@/components/Consommation";
+import SideMenu, { type SideMenuItem } from "@/components/SideMenu";
+import { ConsoMoisModal, HistoriqueModal } from "@/components/Consommation";
 import GeoPrompt from "@/components/GeoPrompt";
 import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner, RechargeModal } from "@/components/compte";
 import { Icon } from "@/components/icons";
@@ -68,6 +68,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const [chosen, setChosen] = useState<TricycleDispo | null>(null);
   const [historique, setHistorique] = useState<ClientHistorique[] | null>(null);
   const [histoOpen, setHistoOpen] = useState(false);
+  const [consoOpen, setConsoOpen] = useState(false);
   const geo = useGeo();
   const { confirm, ConfirmDialog } = useConfirm();
 
@@ -171,10 +172,49 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   }
 
   const essai = enEssai(profile.essai_fin);
-  const conso = <ConsoMoisCard historique={historique} essai={essai} onHistorique={() => setHistoOpen(true)} />;
+  const geoActif = geo.status === "granted" || geo.status === "asking";
+  // Le réglage GPS ne sert qu'au moment de commander.
+  const peutCommander = !active && !bloque;
 
   return (
-    <Wrap onLogout={onLogout} profile={profile} onHistorique={() => setHistoOpen(true)}>
+    <Wrap
+      onLogout={onLogout}
+      profile={profile}
+      menuItems={[
+        { icon: "drop", label: "Ma conso du mois", hint: "Citernes, coût, simulation", onClick: () => setConsoOpen(true) },
+        { icon: "clock", label: "Historique", hint: "Ma consommation d'eau par mois", onClick: () => setHistoOpen(true) },
+      ]}
+      menuExtra={
+        peutCommander && (
+          <Toggle
+            on={geoActif}
+            onToggle={() => (geoActif ? geo.disable() : geo.request())}
+            label={
+              <span className="inline-flex items-center gap-1.5">
+                <Icon name="pin" size={16} className="text-azur" /> Position exacte pour ma commande
+              </span>
+            }
+            hint={
+              geo.status === "asking"
+                ? "Localisation en cours…"
+                : geo.status === "granted" && geo.coords
+                ? `GPS précis · ±${geo.coords.accuracy} m`
+                : "Facultatif : sinon on garde ta position enregistrée."
+            }
+          />
+        )
+      }
+    >
+      <ConsoMoisModal
+        open={consoOpen}
+        onClose={() => setConsoOpen(false)}
+        historique={historique}
+        essai={essai}
+        onHistorique={() => {
+          setConsoOpen(false);
+          setHistoOpen(true);
+        }}
+      />
       <HistoriqueModal open={histoOpen} onClose={() => setHistoOpen(false)} historique={historique} essai={essai} />
       {error && (
         <div className="mb-6">
@@ -190,7 +230,6 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
               Commander à nouveau
             </Btn>
           )}
-          {conso}
           {ConfirmDialog}
         </div>
       ) : bloque ? (
@@ -203,27 +242,6 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
         </motion.div>
       ) : (
         <>
-          <div className="mb-8">{conso}</div>
-
-          <section className="mb-8">
-            <Toggle
-              on={geo.status === "granted" || geo.status === "asking"}
-              onToggle={() => ((geo.status === "granted" || geo.status === "asking") ? geo.disable() : geo.request())}
-              label={
-                <span className="inline-flex items-center gap-1.5">
-                  <Icon name="pin" size={16} className="text-azur" /> Actualiser ma position pour cette commande
-                </span>
-              }
-              hint={
-                geo.status === "asking"
-                  ? "Localisation en cours…"
-                  : geo.status === "granted" && geo.coords
-                  ? `GPS précis · ±${geo.coords.accuracy} m`
-                  : "Facultatif : sinon on garde ta position enregistrée."
-              }
-            />
-          </section>
-
           <section>
             <h2 className="title-md mb-5">Tricycles de {profile.cite_nom}</h2>
             {tricycles === null ? (
@@ -275,12 +293,15 @@ function PointsBadge({ soldePoints }: { soldePoints: number }) {
 function Wrap({
   onLogout,
   profile,
-  onHistorique,
+  menuItems,
+  menuExtra,
   children,
 }: {
   onLogout: () => void;
   profile?: ClientProfile;
-  onHistorique?: () => void;
+  /** Entrées du menu propres à l'écran ; sans elles (chargement, code provisoire), seul « Quitter » reste. */
+  menuItems?: SideMenuItem[];
+  menuExtra?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const depot = useDepotPhone();
@@ -293,15 +314,14 @@ function Wrap({
           titre={profile?.nom}
           sousTitre={profile && `${profile.cite_nom} · Lot ${profile.lot_numero}`}
           items={
-            profile && onHistorique
-              ? [
-                  { icon: "clock", label: "Historique", hint: "Ma consommation d'eau par mois", onClick: onHistorique },
-                  { icon: "money", label: "Recharger mes points", hint: "Par Wave, avant d'être à court", onClick: () => setRechargeOpen(true) },
-                ]
+            profile && menuItems
+              ? [...menuItems, { icon: "money", label: "Recharger mes points", hint: "Par Wave, avant d'être à court", onClick: () => setRechargeOpen(true) }]
               : []
           }
           onLogout={onLogout}
-        />
+        >
+          {menuExtra}
+        </SideMenu>
       </header>
       {profile && (
         <RechargeModal

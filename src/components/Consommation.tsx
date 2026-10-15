@@ -57,12 +57,16 @@ function SimulationEssai({ m }: { m: ConsoMois }) {
   );
 }
 
-/** Résumé du mois en cours sur le tableau de bord du client. */
-export function ConsoMoisCard({
+/** Consommation du mois en cours (menu du client), avec la simulation pendant l'essai. */
+export function ConsoMoisModal({
+  open,
+  onClose,
   historique,
   essai,
   onHistorique,
 }: {
+  open: boolean;
+  onClose: () => void;
   historique: ClientHistorique[] | null;
   essai: boolean;
   onHistorique: () => void;
@@ -71,10 +75,13 @@ export function ConsoMoisCard({
   const m = useMemo(() => (historique ? consoParMois(historique).find((x) => x.cle === cle) : undefined) ?? consoVide(cle), [historique, cle]);
 
   return (
-    <section className="brut p-5">
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 className="title-md">Ma conso ce mois-ci</h2>
-        <span className="text-sm font-semibold text-ink/50">{nomMois(cle)}</span>
+    <Modal open={open} onClose={onClose}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="title-md">Ma conso du mois</h2>
+          <p className="text-sm font-semibold text-ink/50">{nomMois(cle)}</p>
+        </div>
+        <CloseButton onClick={onClose} />
       </div>
       {historique === null ? (
         <Spinner label="Calcul de ta consommation" />
@@ -95,7 +102,7 @@ export function ConsoMoisCard({
           </button>
         </>
       )}
-    </section>
+    </Modal>
   );
 }
 

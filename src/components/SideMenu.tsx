@@ -30,12 +30,15 @@ export default function SideMenu({
   titre,
   sousTitre,
   items,
+  children,
   onLogout,
 }: {
   /** Nom du titulaire (absent tant que le profil n'est pas chargé). */
   titre?: string;
   sousTitre?: string;
   items: SideMenuItem[];
+  /** Réglages affichés sous les entrées (ex. interrupteur GPS) : ne ferment pas le menu. */
+  children?: ReactNode;
   onLogout: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -102,6 +105,8 @@ export default function SideMenu({
                   }}
                 />
               ))}
+
+              {children}
 
               <div className="mt-auto pt-4">
                 <Item icon="logout" label="Quitter" danger onClick={onLogout} />
