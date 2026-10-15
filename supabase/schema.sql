@@ -273,8 +273,9 @@ alter table public.commandes add column if not exists quantite_bidons int check 
 alter table public.commandes add column if not exists note            text check (length(note) <= 280);
 -- Heure de livraison effective (temps moyen de livraison, statistiques).
 alter table public.commandes add column if not exists livree_at timestamptz;
--- Remboursement rattaché à la commande annulée (statistiques filtrables par zone / chauffeur).
+-- Remboursement, débit et bonus fidélité rattachés à leur commande (statistiques, chiffre d'affaires).
 alter table public.points_transactions add column if not exists commande_id uuid references public.commandes(id) on delete set null;
+create index if not exists points_transactions_commande_idx on public.points_transactions (commande_id);
 update public.commandes set scheduled_for = (coalesce(programmee_pour, created_at) at time zone 'Africa/Abidjan')::date
  where scheduled_for is null;
 alter table public.commandes alter column scheduled_for set default ((now() at time zone 'Africa/Abidjan')::date);
@@ -928,9 +929,12 @@ $$;
 -- -50 points au chauffeur pour une commande reçue, bonus fidélité dès 5000
 -- utilisés, passage is_offline sous 50. Le tricycle doit déjà être verrouillé.
 -- Pendant son essai gratuit : rien n'est débité. Renvoie true si débité.
--- drop obligatoire : le type de retour change (void → boolean).
+-- Le bonus est rattaché à la commande qui l'a déclenché (commande_id) : cette
+-- livraison est « offerte » au chauffeur et retirée du chiffre d'affaires.
+-- drop obligatoire : le type de retour (void → boolean) puis la signature ont changé.
 drop function if exists public._debiter_chauffeur(uuid);
-create or replace function public._debiter_chauffeur(p_tricycle uuid)
+drop function if exists public._debiter_chauffeur(uuid, uuid);
+create or replace function public._debiter_chauffeur(p_tricycle uuid, p_commande uuid)
 returns boolean language plpgsql security definer set search_path = public as $$
 declare
   v_solde int;
@@ -938,11 +942,11 @@ declare
 begin
   if (select public._en_essai(essai_fin) from public.tricycles where id = p_tricycle) then return false; end if;
   select solde_points - 50, total_points_utilises + 50 into v_solde, v_utilise from public.tricycles where id = p_tricycle;
-  insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, -50, 'DEDUCTION');
+  insert into public.points_transactions (tricycle_id, montant, type, commande_id) values (p_tricycle, -50, 'DEDUCTION', p_commande);
   if v_utilise >= 5000 then
     v_solde := v_solde + 50;
     v_utilise := 0;
-    insert into public.points_transactions (tricycle_id, montant, type) values (p_tricycle, 50, 'BONUS_FIDELITE');
+    insert into public.points_transactions (tricycle_id, montant, type, commande_id) values (p_tricycle, 50, 'BONUS_FIDELITE', p_commande);
   end if;
   update public.tricycles set solde_points = v_solde, total_points_utilises = v_utilise, is_offline = (v_solde < 50)
    where id = p_tricycle;
@@ -1053,7 +1057,7 @@ begin
     update public.clients set solde_points = solde_points - 100 where id = v_client_id;
     insert into public.points_transactions (client_id, montant, type, commande_id) values (v_client_id, -100, 'DEDUCTION', v_id);
   end if;
-  update public.commandes set client_debite = not v_client_essai, chauffeur_debite = public._debiter_chauffeur(p_tricycle)
+  update public.commandes set client_debite = not v_client_essai, chauffeur_debite = public._debiter_chauffeur(p_tricycle, v_id)
    where id = v_id;
 
   return v_id;
@@ -1120,7 +1124,7 @@ begin
           'manual', v, v_temp, p_quantite, v_note)
   returning id into v_id;
 
-  update public.commandes set client_debite = false, chauffeur_debite = public._debiter_chauffeur(v) where id = v_id;
+  update public.commandes set client_debite = false, chauffeur_debite = public._debiter_chauffeur(v, v_id) where id = v_id;
 
   insert into public.journal_actions (action, acteur_type, acteur_id, details)
   values ('COMMANDE_MANUELLE', 'chauffeur', v,
@@ -1214,6 +1218,23 @@ language sql stable security definer set search_path = public as $$
   order by c.created_at desc limit 1
 $$;
 
+-- Historique du client connecté (menu « Historique » + résumé du mois) : ses
+-- commandes des 12 derniers mois, regroupées par mois côté appli.
+drop function if exists public.client_historique(text, text);
+create or replace function public.client_historique(p_tel text, p_token text)
+returns table (
+  id uuid, status text, prix int, source text, created_at timestamptz,
+  livree_at timestamptz, scheduled_for date, chauffeur_nom text, client_debite boolean
+)
+language sql stable security definer set search_path = public as $$
+  select c.id, c.status, c.prix, c.source, c.created_at, c.livree_at, c.scheduled_for, t.nom, c.client_debite
+  from public.commandes c
+  join public.tricycles t on t.id = c.tricycle_id
+  where c.client_id = public._auth_client(p_tel, p_token)
+    and c.created_at > now() - interval '12 months'
+  order by c.created_at desc
+$$;
+
 -- ─── RPC : chauffeur ────────────────────────────────────────────────────────
 
 create or replace function public.chauffeur_profil(p_tel text, p_token text)
@@ -1241,6 +1262,26 @@ language sql stable security definer set search_path = public as $$
   where c.tricycle_id = public._auth_tricycle(p_tel, p_token)
     and c.status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
   order by c.position_file
+$$;
+
+-- Historique du chauffeur connecté (menu « Mes statistiques ») : ses commandes
+-- des 12 derniers mois, regroupées par mois côté appli.
+drop function if exists public.chauffeur_historique(text, text);
+create or replace function public.chauffeur_historique(p_tel text, p_token text)
+returns table (
+  id uuid, status text, prix int, source text, created_at timestamptz, livree_at timestamptz,
+  lot_numero text, client_nom text, quantite_bidons int, chauffeur_debite boolean, chauffeur_bonus boolean
+)
+language sql stable security definer set search_path = public as $$
+  select c.id, c.status, c.prix, c.source, c.created_at, c.livree_at, c.lot_numero, cl.nom, c.quantite_bidons,
+         c.chauffeur_debite,
+         exists (select 1 from public.points_transactions pt
+                  where pt.commande_id = c.id and pt.type = 'BONUS_FIDELITE')
+  from public.commandes c
+  join public.clients cl on cl.id = c.client_id
+  where c.tricycle_id = public._auth_tricycle(p_tel, p_token)
+    and c.created_at > now() - interval '12 months'
+  order by c.created_at desc
 $$;
 
 -- ACTIVE / PAUSED / OFFLINE. Repasser ACTIVE assigne d'un coup, dans l'ordre
@@ -1467,7 +1508,9 @@ begin
                   from public.tricycles x),
     'clients', (select coalesce(jsonb_agg(to_jsonb(x) - 'pin_hash' - 'session_hash' - 'pin_essais' - 'pin_bloque_jusqua' - 'created_at'), '[]'::jsonb)
                 from public.clients x),
-    'commandes', (select coalesce(jsonb_agg(to_jsonb(x) order by x.created_at desc), '[]'::jsonb) from public.commandes x),
+    'commandes', (select coalesce(jsonb_agg(to_jsonb(x) || jsonb_build_object('chauffeur_bonus', exists (
+                    select 1 from public.points_transactions pt where pt.commande_id = x.id and pt.type = 'BONUS_FIDELITE'))
+                  order by x.created_at desc), '[]'::jsonb) from public.commandes x),
     'settings', (select to_jsonb(s) - 'id' from public.settings s where s.id)
   );
 end $$;
@@ -1525,7 +1568,7 @@ drop function if exists public.admin_prolonger_abonnement(text, text, uuid);
 
 -- Recharge manuelle de points (l'admin l'appelle après avoir reçu le paiement
 -- Wave) — clients ET chauffeurs, système 100% recharge : montant multiple de
--- 50 obligatoire, débloque automatiquement le compte si son solde repasse à
+-- 50 obligatoire (100 pour un client), débloque automatiquement le compte si son solde repasse à
 -- 50 ou plus (uniquement pertinent pour les chauffeurs : is_offline), et
 -- logue la transaction.
 -- drop obligatoire : la signature change (p_table en 3e position, remplace
@@ -1537,6 +1580,8 @@ returns void language plpgsql security definer set search_path = public as $$
 declare v uuid := public._auth_admin(p_tel, p_token); v_solde int;
 begin
   if p_montant is null or p_montant <= 0 or p_montant % 50 <> 0 then raise exception 'MONTANT_INVALIDE'; end if;
+  -- Client : multiple de 100 (= 1 commande), pour un solde toujours en commandes entières.
+  if p_table = 'clients' and p_montant % 100 <> 0 then raise exception 'MONTANT_INVALIDE_CLIENT'; end if;
   if p_table = 'tricycles' then
     update public.tricycles set solde_points = solde_points + p_montant where id = p_id returning solde_points into v_solde;
     if v_solde is null then raise exception 'CHAUFFEUR_INTROUVABLE'; end if;
@@ -1669,7 +1714,11 @@ end $$;
 -- ─── RPC : statistiques annuelles (admin) ──────────────────────────────────
 -- Une seule requête pour toute la page /admin/statistiques. Les mois sont ceux
 -- de la date de commande (heure d'Abidjan). Filtres facultatifs : cité, chauffeur.
---   ca              somme des prix des commandes LIVREE
+--   ca_brut         revenu plateforme des commandes LIVREE : 100 par client débité
+--                   + 50 par chauffeur débité (rien pendant les essais, 50 seulement
+--                   pour une saisie manuelle : le client n'y paie pas)
+--   bonus           livraisons LIVREE offertes au chauffeur (bonus fidélité)
+--   ca              ca_brut - 50 × bonus
 --   echecs          commandes encore actives dont le jour prévu est passé
 --   nouveaux        clients dont la toute première commande tombe dans le mois
 --   recurrents      clients ayant déjà commandé avant ce mois
@@ -1689,6 +1738,9 @@ begin
   base as (
     select c.id, c.client_id, c.tricycle_id, c.cite_id, c.lot_numero, c.status, c.source, c.prix,
            c.quantite_bidons, c.scheduled_for, c.created_at, c.livree_at, p.premiere,
+           c.client_debite, c.chauffeur_debite,
+           exists (select 1 from public.points_transactions pt
+                    where pt.commande_id = c.id and pt.type = 'BONUS_FIDELITE') as chauffeur_bonus,
            extract(year  from c.created_at at time zone 'Africa/Abidjan')::int as an,
            extract(month from c.created_at at time zone 'Africa/Abidjan')::int as mois,
            extract(month from p.premiere at time zone 'Africa/Abidjan')::int as mois_premiere,
@@ -1723,7 +1775,12 @@ begin
            count(*) filter (where status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
                               and scheduled_for < public._today_abj())::int as echecs,
            coalesce(sum(quantite_bidons) filter (where status = 'LIVREE'), 0)::int as bidons,
-           coalesce(sum(prix) filter (where status = 'LIVREE'), 0)::bigint as ca,
+           (100 * count(*) filter (where status = 'LIVREE' and client_debite)
+            + 50 * count(*) filter (where status = 'LIVREE' and chauffeur_debite))::bigint as ca_brut,
+           count(*) filter (where status = 'LIVREE' and chauffeur_bonus)::int as bonus,
+           (100 * count(*) filter (where status = 'LIVREE' and client_debite)
+            + 50 * count(*) filter (where status = 'LIVREE' and chauffeur_debite)
+            - 50 * count(*) filter (where status = 'LIVREE' and chauffeur_bonus))::bigint as ca,
            count(distinct client_id)::int as clients_uniques,
            count(distinct client_id) filter (where an_premiere = an and mois_premiere = mois)::int as nouveaux,
            count(distinct client_id) filter (where not (an_premiere = an and mois_premiere = mois))::int as recurrents,
@@ -1736,7 +1793,7 @@ begin
     select m.mois,
            coalesce(a.total, 0) total, coalesce(a.app, 0) app, coalesce(a.manual, 0) manual,
            coalesce(a.livrees, 0) livrees, coalesce(a.annulees, 0) annulees, coalesce(a.echecs, 0) echecs,
-           coalesce(a.bidons, 0) bidons, coalesce(a.ca, 0) ca,
+           coalesce(a.bidons, 0) bidons, coalesce(a.ca, 0) ca, coalesce(a.ca_brut, 0) ca_brut, coalesce(a.bonus, 0) bonus,
            coalesce(a.clients_uniques, 0) clients_uniques, coalesce(a.nouveaux, 0) nouveaux, coalesce(a.recurrents, 0) recurrents,
            coalesce(p3.nb, 0) clients_plus_3,
            a.temps_moyen_min, coalesce(a.livrees_chronometrees, 0) livrees_chronometrees,
@@ -1799,7 +1856,7 @@ revoke execute on function public.release_programmed_orders() from public, anon,
 revoke execute on function public.purge_positions_live()      from public, anon, authenticated;
 revoke execute on function public._today_abj()                from public, anon, authenticated;
 revoke execute on function public._phone_ci(text)             from public, anon, authenticated;
-revoke execute on function public._debiter_chauffeur(uuid)    from public, anon, authenticated;
+revoke execute on function public._debiter_chauffeur(uuid, uuid) from public, anon, authenticated;
 revoke execute on function public._en_essai(timestamptz)       from public, anon, authenticated;
 revoke execute on function public._fin_essai_nouveau()         from public, anon, authenticated;
 revoke execute on function public._journaliser_facturation(uuid) from public, anon, authenticated;

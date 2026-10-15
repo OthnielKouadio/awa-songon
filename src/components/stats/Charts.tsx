@@ -76,7 +76,7 @@ export function CommandesParMois({ data, mois, vide }: { data: Mensuel; mois: nu
 
 export function CaParMois({ data, vide }: { data: Mensuel; vide: boolean }) {
   return (
-    <ChartCard titre="Chiffre d'affaires par mois" sousTitre="Commandes livrées, en FCFA" vide={vide}>
+    <ChartCard titre="Chiffre d'affaires par mois" sousTitre="Revenu net de la plateforme, commandes livrées, en FCFA" vide={vide}>
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
           <defs>

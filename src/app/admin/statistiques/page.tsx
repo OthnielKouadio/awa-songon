@@ -30,6 +30,7 @@ import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
 import { clearSession, readSession } from "@/lib/session";
 import {
+  ANNEE_COURANTE,
   ANNEES,
   calculerKpis,
   exporterCsv,
@@ -63,7 +64,7 @@ export default function StatistiquesPage() {
 function Statistiques({ creds }: { creds: Creds }) {
   const router = useRouter();
   const base = usePrivateBase();
-  const [annee, setAnnee] = useState(2026);
+  const [annee, setAnnee] = useState(ANNEE_COURANTE);
   const [mois, setMois] = useState(0);
   const [cite, setCite] = useState("");
   const [chauffeur, setChauffeur] = useState("");
@@ -222,11 +223,16 @@ function Statistiques({ creds }: { creds: Creds }) {
 
                 <KpiCard
                   icon={Wallet}
-                  titre="Chiffre d'affaires"
+                  titre="Chiffre d'affaires net"
                   valeur={fmtFcfa(k.ca)}
-                  detail={k.caMoyenMois != null ? `${fmtFcfa(k.caMoyenMois)} en moyenne par mois` : "Commandes livrées du mois"}
+                  detail={`Brut ${fmtFcfa(k.caBrut)} · Remise bonus −${fmtFcfa(k.remiseBonus)} (${fmtNombre(k.bonus)} offertes)`}
                 />
-                <KpiCard icon={Receipt} titre="Panier moyen" valeur={k.panierMoyen == null ? "—" : fmtFcfa(k.panierMoyen)} detail={`Sur ${fmtNombre(k.livrees)} commandes livrées`} />
+                <KpiCard
+                  icon={Receipt}
+                  titre="Revenu moyen par livraison"
+                  valeur={k.panierMoyen == null ? "—" : fmtFcfa(k.panierMoyen)}
+                  detail={`Sur ${fmtNombre(k.livrees)} commandes livrées`}
+                />
                 <KpiCard
                   icon={RotateCcw}
                   titre="Avoirs / remboursements"
@@ -274,7 +280,8 @@ function Statistiques({ creds }: { creds: Creds }) {
         {vue ? <RecapTable lignes={vue.recap.lignes} total={vue.recap.total} actions={boutonsExport} /> : <ChartSkeleton hauteur={320} />}
 
         <p className="text-xs text-slate-400">
-          Chiffre d&apos;affaires et panier moyen calculés sur les commandes livrées. Échec : commande encore ouverte après son jour de livraison prévu.
+          Chiffre d&apos;affaires = revenu de la plateforme sur les commandes livrées : 100 FCFA par commande payée par le client, 50 FCFA par commande
+          payée par le chauffeur (rien pendant les essais gratuits), moins 50 FCFA par livraison offerte (bonus fidélité). Échec : commande encore ouverte après son jour de livraison prévu.
           Bidons : quantité déclarée lors des saisies manuelles. Temps moyen : livraisons enregistrées depuis la mise en place du suivi.
         </p>
       </div>

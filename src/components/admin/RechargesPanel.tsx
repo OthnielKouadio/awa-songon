@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { api } from "@/lib/data-provider";
-import { enEssai, formatPoints, jour, onlyDigits, RECHARGE_MULTIPLE, SOLDE_MIN, SOLDE_MIN_CLIENT } from "@/lib/format";
+import { enEssai, formatPoints, jour, onlyDigits, RECHARGE_MULTIPLE, RECHARGE_MULTIPLE_CLIENT, SOLDE_MIN, SOLDE_MIN_CLIENT } from "@/lib/format";
 import type { AdminData, Creds } from "@/lib/types";
 import { Badge, ErrorBox, Table, TableBtn, Td, Th } from "../ui";
 import { correspond, Panel, RechercheCompte, useMutation } from "./shared";
@@ -17,7 +17,8 @@ export default function RechargesPanel({ creds, data, reload }: { creds: Creds; 
   function recharger(table: "tricycles" | "clients", id: string) {
     const montant = Number(inputs[id]);
     if (!Number.isFinite(montant) || montant <= 0) return setError("Entre un montant.");
-    if (montant % RECHARGE_MULTIPLE !== 0) return setError(`Le montant doit être un multiple de ${RECHARGE_MULTIPLE}.`);
+    const multiple = table === "clients" ? RECHARGE_MULTIPLE_CLIENT : RECHARGE_MULTIPLE;
+    if (montant % multiple !== 0) return setError(`Le montant doit être un multiple de ${multiple}.`);
     void run(() => api.admin.rechargerPoints(creds, table, id, montant)).then((ok) => {
       if (ok) setInputs((s) => ({ ...s, [id]: "" }));
     });
@@ -35,7 +36,8 @@ export default function RechargesPanel({ creds, data, reload }: { creds: Creds; 
       <p className="mb-5 max-w-2xl text-sm font-medium text-ink/60">
         1 FCFA = 1 point — système 100% recharge, clients et chauffeurs. Un chauffeur sous {formatPoints(SOLDE_MIN)} n&apos;est plus visible
         des clients ; un client sous {formatPoints(SOLDE_MIN_CLIENT)} ne peut plus commander. Recharge ici après réception d&apos;un
-        paiement Wave — le montant doit être un multiple de {RECHARGE_MULTIPLE}. Pendant son essai gratuit, un compte n&apos;utilise pas ses
+        paiement Wave — le montant doit être un multiple de {RECHARGE_MULTIPLE} pour un chauffeur, de {RECHARGE_MULTIPLE_CLIENT} pour un
+        client (dès {RECHARGE_MULTIPLE_CLIENT} FCFA). Pendant son essai gratuit, un compte n&apos;utilise pas ses
         points : une recharge faite pendant l&apos;essai sert après.
       </p>
       <RechercheCompte value={recherche} onChange={setRecherche} />

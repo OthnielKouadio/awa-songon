@@ -152,9 +152,9 @@ export const STATUT_LABEL: Record<CompteStatut, string> = {
 // ─── Points (1 FCFA = 1 point) — système 100% recharge, clients ET chauffeurs ──
 // Numéro de dépôt (Wave) : plus de constante ici — il vient de settings.depot_phone,
 // modifiable par l'admin (voir useDepotPhone).
-/** Un montant de recharge doit être un multiple de ça. */
+/** Recharge chauffeur : multiple de ça (= coût d'une livraison). */
 export const RECHARGE_MULTIPLE = 50;
-/** Montant minimum conseillé pour une recharge Wave (en FCFA = en points). */
+/** Montant minimum conseillé pour une recharge Wave d'un chauffeur (en FCFA = en points). */
 export const RECHARGE_MIN_FCFA = 1000;
 
 // Chauffeur
@@ -174,6 +174,18 @@ export const CITERNES_FIDELITE = SEUIL_FIDELITE / POINTS_PAR_LIVRAISON;
 export const COUT_COMMANDE_CLIENT = 100;
 /** Sous ce solde, le client ne peut plus commander (redirection /bloque). */
 export const SOLDE_MIN_CLIENT = 100;
+/** Recharge client : multiple de ça, et minimum = 1 commande. Pas de gros minimum :
+ *  un client qui n'a que 100 FCFA sur Wave doit pouvoir se faire livrer. */
+export const RECHARGE_MULTIPLE_CLIENT = COUT_COMMANDE_CLIENT;
+
+/** Revenu plateforme d'une commande : ce qui a réellement été débité (100 client +
+ *  50 chauffeur, rien pendant un essai), et la remise si elle a déclenché le bonus
+ *  fidélité (livraison offerte au chauffeur). Net = brut - remise. */
+export function revenuCommande(c: { client_debite?: boolean; chauffeur_debite?: boolean; chauffeur_bonus?: boolean }) {
+  const brut = (c.client_debite ? COUT_COMMANDE_CLIENT : 0) + (c.chauffeur_debite ? POINTS_PAR_LIVRAISON : 0);
+  const remise = c.chauffeur_bonus ? BONUS_FIDELITE_POINTS : 0;
+  return { brut, remise, net: brut - remise };
+}
 
 // ─── Essai gratuit (par compte, points illimités) ───────────────────────────
 /** Durée annoncée sur la vitrine. La durée réellement appliquée aux nouveaux

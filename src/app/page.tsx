@@ -16,6 +16,7 @@ import {
   POINTS_PAR_LIVRAISON,
   RECHARGE_MIN_FCFA,
   RECHARGE_MULTIPLE,
+  RECHARGE_MULTIPLE_CLIENT,
   SEUIL_FIDELITE,
 } from "@/lib/format";
 import { formatPhone } from "@/lib/phone";
@@ -195,7 +196,7 @@ function Tarifs() {
         <div className="brut-sm border-brut p-5">
           <Badge tone="sky">Client</Badge>
           <p className="mt-3 font-bold">
-            {ESSAI_MOIS} mois gratuits, puis {formatFcfa(COUT_COMMANDE_CLIENT)} par commande (recharge min {formatFcfa(RECHARGE_MIN_FCFA)}).
+            {ESSAI_MOIS} mois gratuits, puis {formatFcfa(COUT_COMMANDE_CLIENT)} par commande (recharge dès {formatFcfa(RECHARGE_MULTIPLE_CLIENT)}).
           </p>
         </div>
         <div className="brut-sm border-brut p-5">

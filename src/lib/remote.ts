@@ -8,8 +8,10 @@ import type {
   AdminTable,
   Backend,
   ChauffeurCommande,
+  ChauffeurHistorique,
   ChauffeurProfile,
   Cite,
+  ClientHistorique,
   ClientProfile,
   CompteStatut,
   Creds,
@@ -114,6 +116,7 @@ export const remote: Backend = {
     const rows = await rpc<Suivi[]>("client_commande_active", auth(c));
     return rows[0] ?? null;
   },
+  clientHistorique: (c) => rpc<ClientHistorique[]>("client_historique", auth(c)),
   clientAnnulerCommande: (c, id) => rpc("client_annuler_commande", { ...auth(c), p_commande: id }),
   clientChangerPin: (c, nouveau) => rpc("client_changer_pin", { ...auth(c), p_nouveau: nouveau }),
 
@@ -135,6 +138,7 @@ export const remote: Backend = {
 
   chauffeurProfil: (c) => rpc("chauffeur_profil", auth(c)),
   chauffeurFile: (c) => rpc<ChauffeurCommande[]>("chauffeur_file", auth(c)),
+  chauffeurHistorique: (c) => rpc<ChauffeurHistorique[]>("chauffeur_historique", auth(c)),
   chauffeurCommandeManuelle: (c, m) =>
     rpc<string>("chauffeur_commande_manuelle", {
       ...auth(c),

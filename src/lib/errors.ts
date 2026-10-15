@@ -36,6 +36,7 @@ export const MESSAGES: Record<string, string> = {
   SOLDE_INSUFFISANT_CLIENT: "Solde insuffisant, veuillez recharger.",
   SOLDE_INSUFFISANT: "Solde de points insuffisant. Recharge pour continuer.",
   MONTANT_INVALIDE: "Le montant doit être un multiple de 50.",
+  MONTANT_INVALIDE_CLIENT: "Pour un client, le montant doit être un multiple de 100 (100, 200, 300…).",
   CHAUFFEUR_INTROUVABLE: "Chauffeur introuvable.",
   CLIENT_INTROUVABLE: "Client introuvable.",
   POSITION_INVALIDE: "Position GPS invalide.",

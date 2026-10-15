@@ -3,8 +3,10 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import SideMenu from "@/components/SideMenu";
+import { ConsoMoisCard, HistoriqueModal } from "@/components/Consommation";
 import GeoPrompt from "@/components/GeoPrompt";
-import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner } from "@/components/compte";
+import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner, RechargeModal } from "@/components/compte";
 import { Icon } from "@/components/icons";
 import OrderModal from "@/components/OrderModal";
 import OrderTracker from "@/components/OrderTracker";
@@ -13,9 +15,9 @@ import { useConfirm } from "@/components/CustomModal";
 import { Badge, Btn, CiteBadge, ErrorBox, Logo, Spinner, StatutBadge, Toggle } from "@/components/ui";
 import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
-import { enEssai, formatPoints, SOLDE_MIN_CLIENT } from "@/lib/format";
+import { enEssai, formatPoints, RECHARGE_MULTIPLE_CLIENT, SOLDE_MIN_CLIENT } from "@/lib/format";
 import { clearSession, readSession } from "@/lib/session";
-import type { ClientProfile, Creds, Suivi, TricycleDispo } from "@/lib/types";
+import type { ClientHistorique, ClientProfile, Creds, Suivi, TricycleDispo } from "@/lib/types";
 import { useDepotPhone } from "@/lib/useDepotPhone";
 import { useGeo } from "@/lib/useGeo";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
@@ -64,6 +66,8 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const [tricycles, setTricycles] = useState<TricycleDispo[] | null>(null);
   const [error, setError] = useState("");
   const [chosen, setChosen] = useState<TricycleDispo | null>(null);
+  const [historique, setHistorique] = useState<ClientHistorique[] | null>(null);
+  const [histoOpen, setHistoOpen] = useState(false);
   const geo = useGeo();
   const { confirm, ConfirmDialog } = useConfirm();
 
@@ -77,6 +81,8 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
         return;
       }
       setProfile(p);
+      // En parallèle : un échec ici ne doit pas empêcher de commander.
+      void api.clientHistorique(creds).then(setHistorique, () => setHistorique((h) => h ?? []));
 
       let a = await api.clientCommandeActive(creds);
       let lastId: string | null = null;
@@ -164,8 +170,12 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
     }
   }
 
+  const essai = enEssai(profile.essai_fin);
+  const conso = <ConsoMoisCard historique={historique} essai={essai} onHistorique={() => setHistoOpen(true)} />;
+
   return (
-    <Wrap onLogout={onLogout} profile={profile}>
+    <Wrap onLogout={onLogout} profile={profile} onHistorique={() => setHistoOpen(true)}>
+      <HistoriqueModal open={histoOpen} onClose={() => setHistoOpen(false)} historique={historique} essai={essai} />
       {error && (
         <div className="mb-6">
           <ErrorBox>{error}</ErrorBox>
@@ -180,6 +190,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
               Commander à nouveau
             </Btn>
           )}
+          {conso}
           {ConfirmDialog}
         </div>
       ) : bloque ? (
@@ -192,6 +203,8 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
         </motion.div>
       ) : (
         <>
+          <div className="mb-8">{conso}</div>
+
           <section className="mb-8">
             <Toggle
               on={geo.status === "granted" || geo.status === "asking"}
@@ -262,21 +275,45 @@ function PointsBadge({ soldePoints }: { soldePoints: number }) {
 function Wrap({
   onLogout,
   profile,
+  onHistorique,
   children,
 }: {
   onLogout: () => void;
   profile?: ClientProfile;
+  onHistorique?: () => void;
   children: React.ReactNode;
 }) {
   const depot = useDepotPhone();
+  const [rechargeOpen, setRechargeOpen] = useState(false);
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-5 sm:px-6">
       <header className="flex items-center justify-between gap-3">
         <Logo href="/dashboard" />
-        <button onClick={onLogout} className="rounded-xl border-brut border-ink bg-white px-3 py-2 text-sm font-bold transition-colors hover:bg-sky">
-          <Icon name="logout" size={16} className="inline -mt-0.5 mr-1" /> Quitter
-        </button>
+        <SideMenu
+          titre={profile?.nom}
+          sousTitre={profile && `${profile.cite_nom} · Lot ${profile.lot_numero}`}
+          items={
+            profile && onHistorique
+              ? [
+                  { icon: "clock", label: "Historique", hint: "Ma consommation d'eau par mois", onClick: onHistorique },
+                  { icon: "money", label: "Recharger mes points", hint: "Par Wave, avant d'être à court", onClick: () => setRechargeOpen(true) },
+                ]
+              : []
+          }
+          onLogout={onLogout}
+        />
       </header>
+      {profile && (
+        <RechargeModal
+          role="client"
+          open={rechargeOpen}
+          onClose={() => setRechargeOpen(false)}
+          depot={depot}
+          soldePoints={profile.solde_points}
+          essaiFin={profile.essai_fin}
+          tel={profile.telephone}
+        />
+      )}
 
       {profile && (
         <div className="mt-6 flex flex-wrap items-center gap-2">
@@ -295,7 +332,7 @@ function Wrap({
       )}
       {profile && (
         <div className="mt-4">
-          <FinEssaiBanner fin={profile.essai_fin} depot={depot} />
+          <FinEssaiBanner fin={profile.essai_fin} depot={depot} min={RECHARGE_MULTIPLE_CLIENT} />
         </div>
       )}
 

@@ -22,6 +22,7 @@ import {
   PRIX_MAX,
   PRIX_MIN,
   prochain8h,
+  revenuCommande,
 } from "./format";
 import { normalizePhone, phoneCI } from "./phone";
 import type {
@@ -29,9 +30,11 @@ import type {
   AdminTable,
   Backend,
   ChauffeurCommande,
+  ChauffeurHistorique,
   ChauffeurProfile,
   Cite,
   Client,
+  ClientHistorique,
   ClientProfile,
   Commande,
   CommandeStatus,
@@ -216,6 +219,9 @@ function seed(): DB {
     note: null,
     livree_at: null,
     created_at: minutesAgo(ago),
+    // Passées pendant l'essai gratuit des comptes de démo : rien de débité.
+    client_debite: false,
+    chauffeur_debite: false,
   });
   const mariamId = uid();
   const mariam: MockClient = {
@@ -291,6 +297,8 @@ function seed(): DB {
  *  déterministe, ~2 commandes livrées par jour ouvré, quelques annulations. */
 function historique(clients: { id: string; lot: string }[], chauffeurs: { id: string; prix: number }[], citeId: string): MockCommande[] {
   const out: MockCommande[] = [];
+  // Livraisons par chauffeur : 1 sur 100 est offerte (bonus fidélité), comme en base.
+  const livreesParChauffeur = new Map<string, number>();
   let seedRand = 7;
   const rand = () => (seedRand = (seedRand * 16807) % 2147483647) / 2147483647;
   const debut = Date.UTC(2025, 0, 1);
@@ -304,6 +312,8 @@ function historique(clients: { id: string; lot: string }[], chauffeurs: { id: st
       const manuel = rand() < 0.28;
       const r = rand();
       const status: CommandeStatus = r < 0.07 ? "ANNULEE" : "LIVREE";
+      const rang = status === "LIVREE" ? (livreesParChauffeur.get(ch.id) ?? 0) + 1 : 0;
+      if (rang) livreesParChauffeur.set(ch.id, rang);
       out.push({
         id: uid(),
         client_id: cl.id,
@@ -326,6 +336,11 @@ function historique(clients: { id: string; lot: string }[], chauffeurs: { id: st
         note: null,
         livree_at: status === "LIVREE" ? new Date(created + (25 + Math.floor(rand() * 70)) * 60000).toISOString() : null,
         created_at: new Date(created).toISOString(),
+        // Historique antérieur aux essais : débité (valeur par défaut en base), sauf
+        // le client d'une saisie manuelle, qui ne paie rien dans l'appli.
+        client_debite: !manuel,
+        chauffeur_debite: true,
+        chauffeur_bonus: rang > 0 && rang % 100 === 0,
       });
     }
   }
@@ -374,7 +389,10 @@ function statsDemo(db: DB, annee: number, citeId: string | null, tricycleId: str
       annulees: cs.filter((c) => c.status === "ANNULEE").length,
       echecs: cs.filter((c) => isActive(c.status) && c.scheduled_for < auj).length,
       bidons: livrees.reduce((s, c) => s + (c.quantite_bidons ?? 0), 0),
-      ca: livrees.reduce((s, c) => s + c.prix, 0),
+      // Même calcul que get_yearly_stats : ce qui a réellement été débité, moins les livraisons offertes.
+      ca: livrees.reduce((s, c) => s + revenuCommande(c).net, 0),
+      ca_brut: livrees.reduce((s, c) => s + revenuCommande(c).brut, 0),
+      bonus: livrees.filter((c) => c.chauffeur_bonus).length,
       clients_uniques: clients.size,
       nouveaux: nouveaux.size,
       recurrents: clients.size - nouveaux.size,
@@ -573,13 +591,14 @@ function suivi(db: DB, c: Commande): Suivi {
 
 /** -50 points au chauffeur pour une commande reçue (+ fidélité, passage is_offline).
  *  Rien pendant son essai gratuit. Renvoie true si débité. */
-function debiterChauffeur(t: MockTricycle): boolean {
+function debiterChauffeur(t: MockTricycle, cmd: Commande): boolean {
   if (enEssai(t.essai_fin)) return false;
   t.solde_points -= 50;
   t.total_points_utilises += 50;
   if (t.total_points_utilises >= 5000) {
     t.solde_points += 50;
     t.total_points_utilises = 0;
+    cmd.chauffeur_bonus = true;
   }
   t.is_offline = t.solde_points < 50;
   return true;
@@ -735,7 +754,7 @@ export const mock: Backend = {
 
       if (!clientEssai) cl.solde_points -= 100;
       commande.client_debite = !clientEssai;
-      commande.chauffeur_debite = debiterChauffeur(t);
+      commande.chauffeur_debite = debiterChauffeur(t, commande);
 
       return commande.id;
     });
@@ -924,6 +943,28 @@ export const mock: Backend = {
     return cmd ? suivi(db, cmd) : null;
   },
 
+  // Même périmètre que client_historique : 12 derniers mois, plus récentes d'abord.
+  async clientHistorique(c): Promise<ClientHistorique[]> {
+    const db = read();
+    const cl = authClient(db, c);
+    const depuis = new Date();
+    depuis.setUTCMonth(depuis.getUTCMonth() - 12);
+    return db.commandes
+      .filter((x) => x.client_id === cl.id && x.created_at > depuis.toISOString())
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .map((x) => ({
+        id: x.id,
+        status: x.status,
+        prix: x.prix,
+        source: x.source,
+        created_at: x.created_at,
+        livree_at: x.livree_at,
+        scheduled_for: x.scheduled_for,
+        chauffeur_nom: db.tricycles.find((t) => t.id === x.tricycle_id)?.nom ?? "?",
+        client_debite: x.source === "app" && (x as MockCommande).client_debite !== false,
+      }));
+  },
+
   async clientChangerPin(c, nouveau) {
     tx((db) => {
       const cl = authClient(db, c);
@@ -1006,6 +1047,30 @@ export const mock: Backend = {
       });
   },
 
+  // Même périmètre que chauffeur_historique : 12 derniers mois, plus récentes d'abord.
+  async chauffeurHistorique(c): Promise<ChauffeurHistorique[]> {
+    const db = read();
+    const t = authTricycle(db, c);
+    const depuis = new Date();
+    depuis.setUTCMonth(depuis.getUTCMonth() - 12);
+    return db.commandes
+      .filter((x) => x.tricycle_id === t.id && x.created_at > depuis.toISOString())
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .map((x) => ({
+        id: x.id,
+        status: x.status,
+        prix: x.prix,
+        source: x.source,
+        created_at: x.created_at,
+        livree_at: x.livree_at,
+        lot_numero: x.lot_numero,
+        quantite_bidons: x.quantite_bidons,
+        client_nom: db.clients.find((cl) => cl.id === x.client_id)?.nom ?? "Client",
+        chauffeur_debite: (x as MockCommande).chauffeur_debite !== false,
+        chauffeur_bonus: !!x.chauffeur_bonus,
+      }));
+  },
+
   async chauffeurCommandeManuelle(c, m) {
     return tx((db) => {
       const t = authTricycle(db, c);
@@ -1079,7 +1144,7 @@ export const mock: Backend = {
       };
       db.commandes.push(commande);
       commande.client_debite = false;
-      commande.chauffeur_debite = debiterChauffeur(t);
+      commande.chauffeur_debite = debiterChauffeur(t, commande);
       db.journal.push({
         action: "COMMANDE_MANUELLE",
         acteur_id: t.id,
@@ -1318,6 +1383,7 @@ export const mock: Backend = {
       tx((db) => {
         authAdmin(db, c);
         if (!Number.isFinite(montant) || montant <= 0 || montant % 50 !== 0) return fail("MONTANT_INVALIDE");
+        if (table === "clients" && montant % 100 !== 0) return fail("MONTANT_INVALIDE_CLIENT");
         if (table === "tricycles") {
           const t = db.tricycles.find((x) => x.id === id);
           if (!t) return fail("CHAUFFEUR_INTROUVABLE");

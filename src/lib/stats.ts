@@ -2,7 +2,9 @@ import type { StatsMois, YearlyStats } from "./types";
 
 export const MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
 export const MOIS_COURT = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"];
-export const ANNEES = [2024, 2025, 2026];
+/** De 2024 (début de l'activité) à l'année en cours, pour ne pas figer la liste. */
+export const ANNEE_COURANTE = new Date().getFullYear();
+export const ANNEES = Array.from({ length: Math.max(1, ANNEE_COURANTE - 2023) }, (_, i) => 2024 + i);
 
 const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
 
@@ -50,6 +52,9 @@ export function calculerKpis(s: YearlyStats, mois: number) {
     bidons: somme(rows, "bidons"),
     livrees,
     ca,
+    caBrut: somme(rows, "ca_brut"),
+    bonus: somme(rows, "bonus"),
+    remiseBonus: somme(rows, "ca_brut") - ca,
     caMoyenMois: mois ? null : ca / 12,
     panierMoyen: livrees ? ca / livrees : null,
     remboursements: somme(rows, "remboursements_montant"),
@@ -190,7 +195,7 @@ const ENTETES = [
   "Manuel",
   "% Manuel",
   "Bidons",
-  "CA (FCFA)",
+  "CA net (FCFA)",
   "Clients uniques",
   "Taux réussite (%)",
   "Temps moyen (min)",
@@ -258,8 +263,10 @@ export async function exporterExcel(
     ["Commandes application", kpis.app],
     ["Commandes manuelles", kpis.manual],
     ["Bidons livrés", kpis.bidons],
-    ["Chiffre d'affaires (FCFA)", kpis.ca],
-    ["Panier moyen (FCFA)", kpis.panierMoyen == null ? "" : Math.round(kpis.panierMoyen)],
+    ["Chiffre d'affaires brut (FCFA)", kpis.caBrut],
+    ["Remise bonus fidélité (FCFA)", kpis.remiseBonus],
+    ["Chiffre d'affaires net (FCFA)", kpis.ca],
+    ["Revenu moyen par livraison (FCFA)", kpis.panierMoyen == null ? "" : Math.round(kpis.panierMoyen)],
     ["Remboursements (FCFA)", kpis.remboursements],
     ["Clients actifs", kpis.clientsActifs],
     ["Nouveaux clients", kpis.nouveaux],

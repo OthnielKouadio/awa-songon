@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo, useState } from "react";
-import { CHAUFFEUR_STATUS_LABEL, COMMANDE_LABEL, COMMANDES_ACTIVES, FILTRES_SOURCE, type FiltreSource, formatFcfa, heure } from "@/lib/format";
+import { CHAUFFEUR_STATUS_LABEL, COMMANDE_LABEL, COMMANDES_ACTIVES, FILTRES_SOURCE, type FiltreSource, formatFcfa, heure, revenuCommande } from "@/lib/format";
 import type { AdminData, Commande } from "@/lib/types";
 import { CustomSelect } from "../CustomSelect";
 import MapLazy from "../MapLazy";
@@ -21,11 +21,14 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
 
   const kpis = useMemo(() => {
     const duJour = commandes.filter((c) => isToday(c.created_at) && c.status !== "ANNULEE");
+    const ca = duJour.map(revenuCommande);
     return {
       clients: clients.length,
       chauffeurs: tricycles.length,
       commandesDuJour: duJour.length,
-      caEstime: duJour.reduce((sum, c) => sum + c.prix, 0),
+      caBrut: ca.reduce((s, r) => s + r.brut, 0),
+      remiseBonus: ca.reduce((s, r) => s + r.remise, 0),
+      caNet: ca.reduce((s, r) => s + r.net, 0),
     };
   }, [clients, tricycles, commandes]);
 
@@ -95,7 +98,12 @@ export default function AdminDashboard({ data }: { data: AdminData }) {
         <Kpi label="Clients" value={kpis.clients} primary />
         <Kpi label="Chauffeurs" value={kpis.chauffeurs} />
         <Kpi label="Commandes aujourd'hui" value={kpis.commandesDuJour} />
-        <Kpi label="CA estimé aujourd'hui" value={kpis.caEstime} format={formatFcfa} />
+        <Kpi
+          label="CA aujourd'hui"
+          value={kpis.caNet}
+          format={formatFcfa}
+          detail={`Brut ${formatFcfa(kpis.caBrut)} · Remise bonus −${formatFcfa(kpis.remiseBonus)}`}
+        />
       </div>
 
       <section className="brut p-5 sm:p-6">
@@ -194,13 +202,14 @@ function CommandeLine({ c, cite, chauffeur, client }: { c: Commande; cite: strin
   );
 }
 
-function Kpi({ label, value, primary = false, format }: { label: string; value: number; primary?: boolean; format?: (n: number) => string }) {
+function Kpi({ label, value, primary = false, format, detail }: { label: string; value: number; primary?: boolean; format?: (n: number) => string; detail?: string }) {
   return (
     <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ type: "spring", stiffness: 200, damping: 26 }} className={`brut p-4 ${primary ? "!bg-azur text-white" : ""}`}>
       <p className="font-display text-4xl font-bold leading-none sm:text-5xl">
         <Counter value={value} format={format} />
       </p>
       <p className={`mt-2 text-xs font-bold uppercase tracking-wide ${primary ? "text-white/85" : "text-ink/60"}`}>{label}</p>
+      {detail && <p className={`mt-1 text-xs font-medium ${primary ? "text-white/75" : "text-ink/55"}`}>{detail}</p>}
     </motion.div>
   );
 }

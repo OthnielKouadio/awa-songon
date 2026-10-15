@@ -7,7 +7,7 @@ import { Icon } from "@/components/icons";
 import { Btn, LinkBtn, Logo, Spinner } from "@/components/ui";
 import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
-import { enEssai, formatPoints, RECHARGE_MIN_FCFA, formatFcfa, SOLDE_MIN_CLIENT } from "@/lib/format";
+import { enEssai, formatPoints, RECHARGE_MULTIPLE_CLIENT, formatFcfa, SOLDE_MIN_CLIENT } from "@/lib/format";
 import { callLink, formatPhone } from "@/lib/phone";
 import { clearSession, readSession } from "@/lib/session";
 import type { Creds } from "@/lib/types";
@@ -93,7 +93,7 @@ function Bloque({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
             </span>
             <h1 className="title-lg mt-5">Recharge ton compte pour continuer</h1>
             <p className="mt-3 font-medium text-ink/70">
-              Rechargez par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
+              Rechargez par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> pour continuer. Dès {formatFcfa(RECHARGE_MULTIPLE_CLIENT)} (= 1 commande), puis par centaines : 200, 300, 500…
             </p>
             <div className="mt-5 inline-flex items-center gap-2 rounded-full border-[1.5px] border-danger bg-danger/10 px-4 py-2 font-bold text-danger">
               Solde actuel : {formatPoints(solde)}

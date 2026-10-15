@@ -13,7 +13,7 @@ const COLONNES: { label: string; align?: "right" }[] = [
   { label: "Manuel", align: "right" },
   { label: "% Manuel", align: "right" },
   { label: "Bidons", align: "right" },
-  { label: "CA (FCFA)", align: "right" },
+  { label: "CA net (FCFA)", align: "right" },
   { label: "Clients uniques", align: "right" },
   { label: "Taux réussite", align: "right" },
   { label: "Temps moyen", align: "right" },

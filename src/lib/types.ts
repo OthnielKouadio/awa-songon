@@ -89,6 +89,12 @@ export type Commande = {
   note: string | null;
   livree_at: string | null;
   created_at: string;
+  /** 100 points débités au client (false : essai gratuit ou saisie manuelle). Vue admin. */
+  client_debite?: boolean;
+  /** 50 points débités au chauffeur (false : essai gratuit). Vue admin. */
+  chauffeur_debite?: boolean;
+  /** Cette commande a déclenché le bonus fidélité : livraison offerte au chauffeur. Vue admin. */
+  chauffeur_bonus?: boolean;
 };
 
 /** Vue publique d'un tricycle de la cité (sans téléphone). */
@@ -201,7 +207,12 @@ export type StatsMois = {
   annulees: number;
   echecs: number;
   bidons: number;
+  /** Revenu plateforme net : ca_brut - 50 × bonus. */
   ca: number;
+  /** 100 par client débité + 50 par chauffeur débité (commandes livrées). */
+  ca_brut: number;
+  /** Livraisons offertes au chauffeur (bonus fidélité). */
+  bonus: number;
   clients_uniques: number;
   nouveaux: number;
   recurrents: number;
@@ -234,6 +245,22 @@ export type ClientProfile = {
   essai_fin: string | null;
   /** Code provisoire donné par l'admin : il doit en choisir un nouveau. */
   pin_provisoire: boolean;
+};
+
+/** Une commande de l'historique du client (12 derniers mois). */
+export type ClientHistorique = Pick<Commande, "id" | "status" | "prix" | "source" | "created_at" | "livree_at" | "scheduled_for"> & {
+  chauffeur_nom: string;
+  /** false : essai gratuit ou saisie manuelle (aucun point débité). */
+  client_debite: boolean;
+};
+
+/** Une commande de l'historique du chauffeur (12 derniers mois). */
+export type ChauffeurHistorique = Pick<Commande, "id" | "status" | "prix" | "source" | "created_at" | "livree_at" | "lot_numero" | "quantite_bidons"> & {
+  client_nom: string;
+  /** false : essai gratuit (aucun point débité). */
+  chauffeur_debite: boolean;
+  /** A déclenché le bonus fidélité : livraison offerte. */
+  chauffeur_bonus: boolean;
 };
 
 export type AdminProfile = { email: string };
@@ -311,6 +338,8 @@ export interface Backend {
 
   clientProfil(c: Creds): Promise<ClientProfile>;
   clientCommandeActive(c: Creds): Promise<Suivi | null>;
+  /** Ses commandes des 12 derniers mois, plus récentes d'abord (consommation par mois). */
+  clientHistorique(c: Creds): Promise<ClientHistorique[]>;
   /** Annulation tant que le chauffeur n'est pas parti (QUEUED/ASSIGNED/PROGRAMMED) — points rendus. */
   clientAnnulerCommande(c: Creds, commandeId: string): Promise<void>;
   /** Nouveau code PIN choisi par le client (obligatoire après un code provisoire). */
@@ -320,6 +349,8 @@ export interface Backend {
 
   chauffeurProfil(c: Creds): Promise<ChauffeurProfile>;
   chauffeurFile(c: Creds): Promise<ChauffeurCommande[]>;
+  /** Ses commandes des 12 derniers mois, plus récentes d'abord (statistiques par mois). */
+  chauffeurHistorique(c: Creds): Promise<ChauffeurHistorique[]>;
   /** Saisie directe : client retrouvé par son numéro ou créé en temporaire, commande ASSIGNED. */
   chauffeurCommandeManuelle(c: Creds, cmd: CommandeManuelle): Promise<string>;
   /** Lots déjà connus dans sa cité. */

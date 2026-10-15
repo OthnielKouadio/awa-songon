@@ -24,7 +24,9 @@ import {
   Spinner,
   StatutBadge,
 } from "@/components/ui";
-import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner } from "@/components/compte";
+import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner, RechargeModal } from "@/components/compte";
+import SideMenu from "@/components/SideMenu";
+import { StatsChauffeurModal } from "@/components/StatsChauffeur";
 import { usePrivateBase } from "@/components/PrivateBase";
 import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
@@ -48,7 +50,7 @@ import {
 import { callLink, formatPhone } from "@/lib/phone";
 import { clearSession, readSession } from "@/lib/session";
 import { playNotification, unlockAudio } from "@/lib/sound";
-import type { ChauffeurCommande, ChauffeurProfile, Creds, TricycleStatus } from "@/lib/types";
+import type { ChauffeurCommande, ChauffeurHistorique, ChauffeurProfile, Creds, TricycleStatus } from "@/lib/types";
 import { useDepotPhone } from "@/lib/useDepotPhone";
 import { useGeoWatch } from "@/lib/useGeoWatch";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
@@ -112,6 +114,9 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   const [now, setNow] = useState(() => Date.now());
   const [manuelOpen, setManuelOpen] = useState(false);
   const [filtre, setFiltre] = useState<FiltreSource>("all");
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [rechargeOpen, setRechargeOpen] = useState(false);
+  const [historique, setHistorique] = useState<ChauffeurHistorique[] | null>(null);
   const { confirm, ConfirmDialog } = useConfirm();
   const knownIds = useRef<Set<string> | null>(null);
   const soundRef = useRef(true);
@@ -161,6 +166,16 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
   }, [load]);
 
   useLiveRefresh([profile ? `tricycle:${profile.id}` : null], load, 8000);
+
+  // Historique chargé à l'ouverture des statistiques seulement (inutile à chaque rafraîchissement de la file).
+  useEffect(() => {
+    if (!statsOpen) return;
+    setHistorique(null);
+    api.chauffeurHistorique(creds).then(setHistorique, (e) => {
+      setStatsOpen(false);
+      setError(errorMessage(e));
+    });
+  }, [statsOpen, creds]);
 
   // GPS live : UNIQUEMENT après « J'arrive chez toi », 10 min max. Le hook
   // throttle lui-même (10 s s'il bouge, 30 s s'il avance peu, rien à l'arrêt)
@@ -232,12 +247,48 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   if (!profile) return error ? <div className="mt-10"><ErrorBox>{error}</ErrorBox></div> : <Spinner />;
 
+  // Statistiques et recharge : seulement une fois le compte validé et le code définitif choisi.
+  const menu = (
+    <SideMenu
+      titre={profile.nom}
+      sousTitre={`${profile.cite_nom}${profile.source_nom ? ` · ${profile.source_nom}` : ""}`}
+      items={
+        profile.pin_provisoire || !profile.valide
+          ? []
+          : [
+              { icon: "layers", label: "Mes statistiques", hint: "Mes livraisons par mois", onClick: () => setStatsOpen(true) },
+              { icon: "money", label: "Recharger mes points", hint: "Par Wave, avant d'être bloqué", onClick: () => setRechargeOpen(true) },
+            ]
+      }
+      onLogout={onLogout}
+    />
+  );
+  const fenetres = (
+    <>
+      <StatsChauffeurModal
+        open={statsOpen}
+        onClose={() => setStatsOpen(false)}
+        historique={historique}
+        essai={enEssai(profile.essai_fin)}
+        totalUtilise={profile.total_points_utilises}
+      />
+      <RechargeModal
+        role="chauffeur"
+        open={rechargeOpen}
+        onClose={() => setRechargeOpen(false)}
+        depot={depot}
+        soldePoints={profile.solde_points}
+        essaiFin={profile.essai_fin}
+        tel={profile.telephone}
+      />
+    </>
+  );
+
   const entete = (
     <div className="mb-6 flex items-start justify-between gap-3">
       <h1 className="title-lg">{profile.nom}</h1>
-      <button onClick={onLogout} className="rounded-xl border-brut border-ink bg-white px-3 py-2 text-sm font-bold transition-colors hover:bg-sky">
-        Quitter
-      </button>
+      {menu}
+      {fenetres}
     </div>
   );
 
@@ -303,6 +354,9 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
               <Icon name="phone" size={20} /> Appeler pour recharger
             </LinkBtn>
           )}
+          <Btn variant="white" className="mt-3 w-full" onClick={() => setRechargeOpen(true)}>
+            <Icon name="money" size={18} /> Détails de la recharge
+          </Btn>
         </div>
       </div>
     );
@@ -344,11 +398,10 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           >
             <Icon name={soundOn ? "bell" : "bellOff"} size={20} className={soundOn ? "text-azur" : "text-ink/50"} />
           </button>
-          <button onClick={onLogout} className="rounded-xl border-brut border-ink bg-white px-3 text-sm font-bold transition-colors hover:bg-sky">
-            Quitter
-          </button>
+          {menu}
         </div>
       </div>
+      {fenetres}
 
       {error && <ErrorBox>{error}</ErrorBox>}
 
