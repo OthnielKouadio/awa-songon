@@ -42,8 +42,83 @@ export default function ParametresPage() {
       <button onClick={() => router.push(base)} className="mb-4 mt-6 inline-flex items-center gap-1.5 text-sm font-bold text-ink/60 hover:text-azur">
         <Icon name="arrow" size={16} className="rotate-180" /> Retour au cockpit
       </button>
-      <DepotPhoneForm creds={creds} />
+      <div className="space-y-6">
+        <DepotPhoneForm creds={creds} />
+        <WaveMarchandForm creds={creds} />
+      </div>
     </main>
+  );
+}
+
+/** Nom du marchand affiché aux clients pour vérifier l'écran Wave. Le lien de
+ *  paiement, lui, est fixé dans le code (src/lib/format.ts) : jamais modifiable ici. */
+function WaveMarchandForm({ creds }: { creds: Creds }) {
+  const [actuel, setActuel] = useState<string | null>(null);
+  const [nom, setNom] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [ok, setOk] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api.admin.load(creds);
+      setActuel(d.settings.wave_marchand);
+      setNom(d.settings.wave_marchand);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }, [creds]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const propre = nom.replace(/\s+/g, " ").trim();
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setOk(false);
+    setBusy(true);
+    try {
+      await api.admin.setWaveMarchand(creds, propre);
+      setOk(true);
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel title="Nom du marchand Wave">
+      <p className="mb-5 max-w-lg text-sm font-medium text-ink/60">
+        Le nom qui s&apos;affiche sur l&apos;écran Wave quand on paie. Les clients et chauffeurs le vérifient avant de valider : change-le ici le jour où
+        tu renommes ton compte marchand. Le lien de paiement, lui, ne se change que dans le code, par sécurité.
+      </p>
+      {actuel === null && !error ? (
+        <Spinner />
+      ) : (
+        <form onSubmit={submit} className="max-w-sm space-y-5">
+          <p className="text-sm font-semibold">
+            Actuel : <strong className="font-display text-lg">{actuel ?? "—"}</strong>
+          </p>
+          <Field label="Nouveau nom" hint="Exactement comme Wave l'affiche (2 à 60 caractères).">
+            <input className="field" maxLength={60} value={nom} onChange={(e) => setNom(e.target.value)} autoComplete="off" />
+          </Field>
+          {error && <ErrorBox>{error}</ErrorBox>}
+          {ok && (
+            <p className="flex items-center gap-1.5 font-semibold text-azur">
+              <Icon name="check" size={16} /> Nom enregistré.
+            </p>
+          )}
+          <Btn type="submit" variant="ink" disabled={busy || propre.length < 2 || propre === actuel}>
+            {busy ? "Un instant…" : "Enregistrer"}
+          </Btn>
+        </form>
+      )}
+    </Panel>
   );
 }
 

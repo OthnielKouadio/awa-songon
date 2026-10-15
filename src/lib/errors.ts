@@ -13,6 +13,7 @@ export const MESSAGES: Record<string, string> = {
   CITE_INTROUVABLE: "Choisis ta cité.",
   LOT_INVALIDE: "Numéro de lot invalide.",
   PRIX_INVALIDE: "Entre un prix valide (de 100 à 50 000 FCFA).",
+  NOM_MARCHAND_INVALIDE: "Nom du marchand Wave invalide (2 à 60 caractères, sans < ni >).",
   TEL_INVALIDE_CI: "Numéro ivoirien invalide (10 chiffres, commençant par 01, 05, 07, 21, 25 ou 27).",
   TEL_INVALIDE: "Numéro de téléphone invalide.",
   TRICYCLE_INDISPONIBLE: "Ce tricycle n'est plus disponible. Choisis-en un autre.",

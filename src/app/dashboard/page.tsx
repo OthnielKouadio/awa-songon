@@ -352,7 +352,7 @@ function Wrap({
       )}
       {profile && (
         <div className="mt-4">
-          <FinEssaiBanner fin={profile.essai_fin} depot={depot} min={RECHARGE_MULTIPLE_CLIENT} />
+          <FinEssaiBanner fin={profile.essai_fin} min={RECHARGE_MULTIPLE_CLIENT} />
         </div>
       )}
 

@@ -24,7 +24,7 @@ import {
   Spinner,
   StatutBadge,
 } from "@/components/ui";
-import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner, RechargeModal } from "@/components/compte";
+import { ChangerPinObligatoire, EssaiBadge, FinEssaiBanner, PayerWaveBtn, RechargeModal, VerifMarchand } from "@/components/compte";
 import SideMenu from "@/components/SideMenu";
 import { StatsChauffeurModal } from "@/components/StatsChauffeur";
 import { usePrivateBase } from "@/components/PrivateBase";
@@ -344,14 +344,17 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
           </span>
           <p className="title-md mt-4">Recharge ton compte pour continuer</p>
           <p className="mt-2 font-medium text-ink/60">
-            Rechargez par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> pour continuer. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points).
+            Recharge avec Wave, sans frais. Minimum {formatFcfa(RECHARGE_MIN_FCFA)} ({RECHARGE_MIN_FCFA} points), par tranches de 50. Paie depuis ton numéro de
+            compte : tes points sont ajoutés dès que le paiement est vérifié.
           </p>
           <div className="mt-5 inline-flex items-center gap-2 rounded-full border-[1.5px] border-danger bg-danger/10 px-4 py-2 font-bold text-danger">
             Solde actuel : {formatPoints(profile.solde_points)}
           </div>
+          <PayerWaveBtn className="mt-6" />
+          <VerifMarchand className="mt-2 text-left" />
           {depot && (
-            <LinkBtn href={callLink(depot)} variant="ink" size="lg" className="mt-6 w-full">
-              <Icon name="phone" size={20} /> Appeler pour recharger
+            <LinkBtn href={callLink(depot)} variant="white" className="mt-4 w-full">
+              <Icon name="phone" size={18} className="text-azur" /> Un souci ? Appeler le dépôt
             </LinkBtn>
           )}
           <Btn variant="white" className="mt-3 w-full" onClick={() => setRechargeOpen(true)}>
@@ -370,7 +373,7 @@ function Dashboard({ creds, onLogout }: { creds: Creds; onLogout: () => void }) 
 
   return (
     <div className="mt-8 space-y-7">
-      <FinEssaiBanner fin={profile.essai_fin} depot={depot} />
+      <FinEssaiBanner fin={profile.essai_fin} />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <CiteBadge>

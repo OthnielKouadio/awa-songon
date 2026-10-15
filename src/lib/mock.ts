@@ -23,6 +23,7 @@ import {
   PRIX_MIN,
   prochain8h,
   revenuCommande,
+  WAVE_MARCHAND_DEFAUT,
 } from "./format";
 import { normalizePhone, phoneCI } from "./phone";
 import type {
@@ -288,7 +289,7 @@ function seed(): DB {
     ],
     positions: {},
     journal: [],
-    settings: { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE, essai_mois: 2 },
+    settings: { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE, essai_mois: 2, wave_marchand: WAVE_MARCHAND_DEFAUT },
     admin: { email: DEMO_ADMIN_EMAIL, password: DEMO_ADMIN_PASSWORD || `!${token()}`, token: null, essais: 0, bloque: null },
   };
 }
@@ -484,8 +485,9 @@ function read(): DB {
   }
   db.positions ??= {};
   db.journal ??= [];
-  db.settings ??= { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE, essai_mois: 2 };
+  db.settings ??= { trial_ends_at: "2026-12-31", depot_phone: DEFAULT_DEPOT_PHONE, essai_mois: 2, wave_marchand: WAVE_MARCHAND_DEFAUT };
   db.settings.depot_phone ??= DEFAULT_DEPOT_PHONE;
+  db.settings.wave_marchand ??= WAVE_MARCHAND_DEFAUT;
   db.settings.essai_mois ??= 2;
   if (cron(db)) write(db, false);
   return db;
@@ -772,6 +774,10 @@ export const mock: Backend = {
 
   async fetchDepotPhone() {
     return read().settings.depot_phone;
+  },
+
+  async fetchWaveMarchand() {
+    return read().settings.wave_marchand;
   },
 
   async fetchEssaiFin() {
@@ -1431,6 +1437,16 @@ export const mock: Backend = {
         const n = phoneCI(tel);
         if (!n) return fail("TEL_INVALIDE_CI");
         db.settings.depot_phone = n;
+      });
+    },
+
+    // Mêmes règles que admin_set_wave_marchand (schema.sql).
+    async setWaveMarchand(c, nom) {
+      tx((db) => {
+        authAdmin(db, c);
+        const n = nom.replace(/s+/g, " ").trim();
+        if (n.length < 2 || n.length > 60 || /[\u0000-\u001f<>]/.test(n)) return fail("NOM_MARCHAND_INVALIDE");
+        db.settings.wave_marchand = n;
       });
     },
 

@@ -334,6 +334,10 @@ insert into public.settings (id) values (true) on conflict (id) do nothing;
 -- Numéro de dépôt Wave (forme canonique 0XXXXXXXXX), modifiable dans
 -- Admin → Paramètres (admin_set_depot_phone). Seule source pour l'affichage.
 alter table public.settings add column if not exists depot_phone text not null default '0789855418';
+-- Nom du marchand Wave que le client vérifie sur l'écran de paiement, modifiable
+-- dans Admin → Paramètres. Le LIEN de paiement, lui, est fixé dans le code
+-- (src/lib/format.ts) et n'est jamais modifiable depuis l'appli.
+alter table public.settings add column if not exists wave_marchand text not null default 'Jeune roi hub';
 -- Durée de l'essai gratuit offert à chaque nouveau compte (client ET chauffeur).
 alter table public.settings add column if not exists essai_mois int not null default 2 check (essai_mois between 0 and 24);
 
@@ -1689,6 +1693,26 @@ begin
   update public.settings set depot_phone = v_depot, updated_at = now() where id;
   insert into public.journal_actions (action, acteur_type, acteur_id, details)
   values ('DEPOT_PHONE', 'admin', v, jsonb_build_object('ancien', v_ancien, 'nouveau', v_depot));
+end $$;
+
+-- Nom du marchand Wave (lecture publique : affiché sur les écrans de recharge).
+create or replace function public.get_wave_marchand()
+returns text language sql stable security definer set search_path = public as $$
+  select wave_marchand from public.settings where id
+$$;
+
+create or replace function public.admin_set_wave_marchand(p_tel text, p_token text, p_nom text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v uuid := public._auth_admin(p_tel, p_token);
+  v_nom text := btrim(regexp_replace(coalesce(p_nom, ''), '\s+', ' ', 'g'));
+  v_ancien text;
+begin
+  if length(v_nom) not between 2 and 60 or v_nom ~ '[[:cntrl:]<>]' then raise exception 'NOM_MARCHAND_INVALIDE'; end if;
+  select wave_marchand into v_ancien from public.settings where id;
+  update public.settings set wave_marchand = v_nom, updated_at = now() where id;
+  insert into public.journal_actions (action, acteur_type, acteur_id, details)
+  values ('WAVE_MARCHAND', 'admin', v, jsonb_build_object('ancien', v_ancien, 'nouveau', v_nom));
 end $$;
 
 -- ─── RPC : vérification de session (middleware Next.js) ─────────────────────

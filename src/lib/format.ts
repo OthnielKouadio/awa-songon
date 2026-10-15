@@ -157,6 +157,18 @@ export const RECHARGE_MULTIPLE = 50;
 /** Montant minimum conseillé pour une recharge Wave d'un chauffeur (en FCFA = en points). */
 export const RECHARGE_MIN_FCFA = 1000;
 
+// ─── Paiement Wave marchand (sans frais pour le client) ──────────────────────
+// Fixé dans le code EXPRÈS, jamais modifiable depuis l'admin : pour détourner les
+// paiements, il faudrait un accès au dépôt Git ET au déploiement, pas seulement
+// un mot de passe admin volé. Pour changer de lien : modifier ici, commit, déployer.
+const WAVE_LIEN = "https://pay.wave.com/m/M_ci_4ni9H1CmB-NB/c/ci/";
+/** Nom du marchand par défaut (avant chargement) : le vrai vient de settings.wave_marchand,
+ *  modifiable dans Admin → Paramètres. Le client le vérifie sur l'écran Wave avant de payer. */
+export const WAVE_MARCHAND_DEFAUT = "Jeune roi hub";
+/** Seul un lien marchand Wave Côte d'Ivoire est accepté (https://pay.wave.com/m/M_ci_…) :
+ *  une faute de frappe ou un lien piégé masque le bouton au lieu d'envoyer le client ailleurs. */
+export const WAVE_PAY_URL: string | null = /^https:\/\/pay\.wave\.com\/m\/M_ci_[A-Za-z0-9_-]+\/c\/ci\/?$/.test(WAVE_LIEN) ? WAVE_LIEN : null;
+
 // Chauffeur
 /** Coût d'une livraison assignée (1 citerne = 1000 L = cette appli n'a qu'une quantité), déduit à la création de la commande. */
 export const POINTS_PAR_LIVRAISON = 50;

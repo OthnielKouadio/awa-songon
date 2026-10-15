@@ -19,8 +19,10 @@ import {
   RECHARGE_MULTIPLE_CLIENT,
   SOLDE_MIN,
   SOLDE_MIN_CLIENT,
+  WAVE_PAY_URL,
 } from "@/lib/format";
 import { callLink, formatPhone } from "@/lib/phone";
+import { useWaveMarchand } from "@/lib/useWaveMarchand";
 
 /** Badge « Essai gratuit » pendant l'essai du compte, sinon rien (l'appelant
  *  affiche alors statut + solde). */
@@ -28,8 +30,32 @@ export function EssaiBadge({ fin }: { fin: string | null }) {
   return enEssai(fin) ? <Badge tone="sky">Essai gratuit</Badge> : null;
 }
 
+/** Ouvre le paiement Wave marchand (sans frais pour le client). Lien fixé dans
+ *  le code et vérifié (WAVE_PAY_URL) : rien ne s'affiche s'il est invalide. */
+export function PayerWaveBtn({ variant = "azur", className = "" }: { variant?: "azur" | "ink" | "white"; className?: string }) {
+  if (!WAVE_PAY_URL) return null;
+  return (
+    <LinkBtn href={WAVE_PAY_URL} target="_blank" rel="noopener noreferrer" variant={variant} size="lg" className={`w-full ${className}`}>
+      <Icon name="money" size={20} /> Payer avec Wave
+    </LinkBtn>
+  );
+}
+
+/** Anti-arnaque : le client vérifie le marchand sur l'écran Wave avant de valider. */
+export function VerifMarchand({ className = "" }: { className?: string }) {
+  const marchand = useWaveMarchand();
+  return (
+    <p className={`flex items-start gap-1.5 text-xs font-medium text-ink/60 ${className}`}>
+      <Icon name="shield" size={14} className="mt-0.5 text-azur" />
+      <span>
+        Sans frais pour toi. Sur l&apos;écran Wave, vérifie que le marchand est <strong className="text-ink">« {marchand} »</strong> avant de valider.
+      </span>
+    </p>
+  );
+}
+
 /** Prévient dans les derniers jours de l'essai : après, il faudra recharger. */
-export function FinEssaiBanner({ fin, depot, min = RECHARGE_MIN_FCFA }: { fin: string | null; depot: string | null; min?: number }) {
+export function FinEssaiBanner({ fin, min = RECHARGE_MIN_FCFA }: { fin: string | null; min?: number }) {
   if (!fin || !enEssai(fin)) return null;
   const jours = joursRestants(fin);
   if (jours > ALERTE_FIN_ESSAI_JOURS) return null;
@@ -40,8 +66,16 @@ export function FinEssaiBanner({ fin, depot, min = RECHARGE_MIN_FCFA }: { fin: s
         Ton essai gratuit se termine {jours <= 1 ? "demain" : `dans ${jours} jours`} ({dateLongue(fin.slice(0, 10))}).
       </p>
       <p className="mt-1.5 text-sm font-medium text-ink/70">
-        Pour continuer ensuite, recharge ton compte par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> (minimum{" "}
-        {formatFcfa(min)}).
+        Pour continuer ensuite, recharge ton compte avec Wave, sans frais (minimum {formatFcfa(min)})
+        {WAVE_PAY_URL && (
+          <>
+            {" "}:{" "}
+            <a href={WAVE_PAY_URL} target="_blank" rel="noopener noreferrer" className="font-bold text-azur underline-offset-2 hover:underline">
+              payer avec Wave
+            </a>
+          </>
+        )}
+        .
       </p>
     </div>
   );
@@ -55,7 +89,7 @@ const RECHARGE = {
     bloque: SOLDE_MIN_CLIENT,
     // Seuil des badges de solde (dashboard client) : 3 commandes.
     alerte: SOLDE_MIN_CLIENT * 3,
-    montant: `au moins ${formatFcfa(RECHARGE_MULTIPLE_CLIENT)} (1 commande). Tu peux aussi envoyer 200, 300, 500… : un montant rond en centaines.`,
+    montant: `au moins ${formatFcfa(RECHARGE_MULTIPLE_CLIENT)} (1 commande). Tu peux aussi payer 200, 300, 500… : un montant rond en centaines.`,
     exemple: 500,
   },
   chauffeur: {
@@ -89,20 +123,10 @@ export function RechargeModal({
   /** Numéro du titulaire : c'est ce compte qui sera crédité. */
   tel: string;
 }) {
-  const [copie, setCopie] = useState(false);
   const r = RECHARGE[role];
   const essai = enEssai(essaiFin);
   const restantes = Math.floor(Math.max(0, soldePoints) / r.cout);
   const bas = !essai && soldePoints < r.alerte;
-
-  async function copier() {
-    if (!depot) return;
-    try {
-      await navigator.clipboard.writeText(depot);
-      setCopie(true);
-      setTimeout(() => setCopie(false), 2000);
-    } catch {}
-  }
 
   return (
     <CustomModal open={open} onClose={onClose} title="Recharger mes points">
@@ -125,25 +149,18 @@ export function RechargeModal({
           )}
         </div>
 
-        <div className="rounded-2xl border-brut border-ink bg-sky p-4">
-          <p className="text-xs font-bold uppercase tracking-wide text-ink/50">Numéro de dépôt Wave</p>
-          <div className="mt-1 flex items-center justify-between gap-3">
-            <p className="font-display text-2xl font-bold tabular-nums">{depot ? formatPhone(depot) : "…"}</p>
-            {depot && (
-              <button onClick={copier} className="rounded-xl border-brut border-ink bg-white px-3 py-1.5 text-sm font-bold transition-colors hover:bg-mist">
-                {copie ? "Copié !" : "Copier"}
-              </button>
-            )}
-          </div>
+        <div>
+          <PayerWaveBtn />
+          <VerifMarchand className="mt-2" />
         </div>
 
         <ol className="space-y-2.5 text-sm font-medium text-ink/75">
           <li>
-            <strong className="text-ink">1.</strong> Envoie par Wave à ce numéro {r.montant}
+            <strong className="text-ink">1.</strong> Touche « Payer avec Wave » et paie {r.montant}
           </li>
           <li>
-            <strong className="text-ink">2.</strong> Envoie depuis ton numéro <strong className="text-ink">{formatPhone(tel)}</strong>, ou appelle le dépôt pour le
-            donner : c&apos;est ce compte qui sera crédité.
+            <strong className="text-ink">2.</strong> Paie depuis ton numéro <strong className="text-ink">{formatPhone(tel)}</strong> : c&apos;est lui qui permet de
+            créditer ton compte. Depuis un autre numéro, appelle le dépôt pour le signaler.
           </li>
           <li>
             <strong className="text-ink">3.</strong> Tes points sont ajoutés dès que le paiement est vérifié : 1 FCFA = 1 point, {formatPoints(r.cout)} par {r.unite}{" "}
@@ -152,8 +169,8 @@ export function RechargeModal({
         </ol>
 
         {depot && (
-          <LinkBtn href={callLink(depot)} variant="ink" size="lg" className="w-full">
-            <Icon name="phone" size={20} /> Appeler le dépôt
+          <LinkBtn href={callLink(depot)} variant="white" className="w-full">
+            <Icon name="phone" size={18} className="text-azur" /> Un souci ? Appeler le dépôt
           </LinkBtn>
         )}
       </div>

@@ -9,6 +9,7 @@ import { api } from "@/lib/data-provider";
 import { AppError, errorMessage } from "@/lib/errors";
 import { enEssai, formatPoints, RECHARGE_MULTIPLE_CLIENT, formatFcfa, SOLDE_MIN_CLIENT } from "@/lib/format";
 import { callLink, formatPhone } from "@/lib/phone";
+import { PayerWaveBtn, VerifMarchand } from "@/components/compte";
 import { clearSession, readSession } from "@/lib/session";
 import type { Creds } from "@/lib/types";
 import { useDepotPhone } from "@/lib/useDepotPhone";
@@ -93,15 +94,18 @@ function Bloque({ creds, onLogout }: { creds: Creds; onLogout: () => void }) {
             </span>
             <h1 className="title-lg mt-5">Recharge ton compte pour continuer</h1>
             <p className="mt-3 font-medium text-ink/70">
-              Rechargez par Wave au <strong>{depot ? formatPhone(depot) : "…"}</strong> pour continuer. Dès {formatFcfa(RECHARGE_MULTIPLE_CLIENT)} (= 1 commande), puis par centaines : 200, 300, 500…
+              Recharge avec Wave, sans frais. Dès {formatFcfa(RECHARGE_MULTIPLE_CLIENT)} (= 1 commande), puis par centaines : 200, 300, 500… Paie depuis ton
+              numéro de compte : tes points sont ajoutés dès que le paiement est vérifié.
             </p>
             <div className="mt-5 inline-flex items-center gap-2 rounded-full border-[1.5px] border-danger bg-danger/10 px-4 py-2 font-bold text-danger">
               Solde actuel : {formatPoints(solde)}
             </div>
 
+            <PayerWaveBtn className="mt-6" />
+            <VerifMarchand className="mt-2 text-left" />
             {depot && (
-              <LinkBtn href={callLink(depot)} variant="ink" size="lg" className="mt-6 w-full">
-                <Icon name="phone" size={20} /> Appeler pour recharger
+              <LinkBtn href={callLink(depot)} variant="white" className="mt-4 w-full">
+                <Icon name="phone" size={18} className="text-azur" /> Un souci ? Appeler le dépôt
               </LinkBtn>
             )}
             <Btn variant="white" className="mt-3 w-full" onClick={() => void load()}>

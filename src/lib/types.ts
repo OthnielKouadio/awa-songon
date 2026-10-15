@@ -194,8 +194,9 @@ export type CommandeManuelle = {
   note: string;
 };
 
-/** depot_phone : numéro qui reçoit les recharges Wave, forme canonique 0XXXXXXXXX. */
-export type Settings = { trial_ends_at: string; depot_phone: string; essai_mois: number };
+/** depot_phone : numéro qui reçoit les recharges Wave, forme canonique 0XXXXXXXXX.
+ *  wave_marchand : nom du marchand affiché par Wave (le lien de paiement est fixé dans le code). */
+export type Settings = { trial_ends_at: string; depot_phone: string; essai_mois: number; wave_marchand: string };
 
 /** Agrégats d'un mois (renvoyés par get_yearly_stats). */
 export type StatsMois = {
@@ -326,6 +327,8 @@ export interface Backend {
   subscribeTopics(topics: string[], onChange: () => void): () => void;
   /** Numéro de dépôt (settings.depot_phone), lisible sans connexion. */
   fetchDepotPhone(): Promise<string>;
+  /** Nom du marchand Wave (settings.wave_marchand), lisible sans connexion. */
+  fetchWaveMarchand(): Promise<string>;
   /** Fin de la période d'essai (settings.trial_ends_at, AAAA-MM-JJ). */
   fetchEssaiFin(): Promise<string>;
 
@@ -383,6 +386,8 @@ export interface Backend {
     validerChauffeur(c: Creds, id: string): Promise<void>;
     /** Change settings.depot_phone (numéro ivoirien obligatoire). */
     setDepotPhone(c: Creds, tel: string): Promise<void>;
+    /** Change settings.wave_marchand (2 à 60 caractères), journalisé. */
+    setWaveMarchand(c: Creds, nom: string): Promise<void>;
     /** Toutes les agrégations de /admin/statistiques en un appel. */
     statsAnnuelles(c: Creds, annee: number, citeId: string | null, tricycleId: string | null): Promise<YearlyStats>;
     /** Notifie à chaque changement. Renvoie la fonction de désabonnement. */

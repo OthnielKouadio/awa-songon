@@ -65,6 +65,7 @@ export const remote: Backend = {
   },
 
   fetchDepotPhone: () => rpc<string>("get_depot_phone"),
+  fetchWaveMarchand: () => rpc<string>("get_wave_marchand"),
   fetchEssaiFin: () => rpc<string>("get_essai_fin"),
 
   async fetchSuivi(id) {
@@ -189,6 +190,7 @@ export const remote: Backend = {
     rechargerPoints: (c, table, id, montant) => rpc("admin_recharger_points", { ...auth(c), p_table: table, p_id: id, p_montant: montant }),
     changerMotDePasse: (c, nouveau) => rpc("admin_change_password", { ...auth(c), p_nouveau: nouveau }),
     setDepotPhone: (c, tel) => rpc("admin_set_depot_phone", { ...auth(c), p_depot: tel }),
+    setWaveMarchand: (c, nom) => rpc("admin_set_wave_marchand", { ...auth(c), p_nom: nom }),
     reinitialiserPin: (c, table, id) => rpc<string>("admin_reinitialiser_pin", { ...auth(c), p_table: table, p_id: id }),
     validerChauffeur: (c, id) => rpc("admin_valider_chauffeur", { ...auth(c), p_id: id }),
     statsAnnuelles: (c, annee, citeId, tricycleId) =>

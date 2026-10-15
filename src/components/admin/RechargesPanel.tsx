@@ -4,6 +4,7 @@ import { useState } from "react";
 import { api } from "@/lib/data-provider";
 import { enEssai, formatPoints, jour, onlyDigits, RECHARGE_MULTIPLE, RECHARGE_MULTIPLE_CLIENT, SOLDE_MIN, SOLDE_MIN_CLIENT } from "@/lib/format";
 import type { AdminData, Creds } from "@/lib/types";
+import { Icon } from "../icons";
 import { Badge, ErrorBox, Table, TableBtn, Td, Th } from "../ui";
 import { correspond, Panel, RechercheCompte, useMutation } from "./shared";
 
@@ -39,6 +40,13 @@ export default function RechargesPanel({ creds, data, reload }: { creds: Creds; 
         paiement Wave — le montant doit être un multiple de {RECHARGE_MULTIPLE} pour un chauffeur, de {RECHARGE_MULTIPLE_CLIENT} pour un
         client (dès {RECHARGE_MULTIPLE_CLIENT} FCFA). Pendant son essai gratuit, un compte n&apos;utilise pas ses
         points : une recharge faite pendant l&apos;essai sert après.
+      </p>
+      <p className="mb-5 flex max-w-2xl items-start gap-2 rounded-2xl border-[1.5px] border-danger bg-danger/10 px-4 py-3 text-sm font-semibold text-danger">
+        <Icon name="alert" size={18} className="mt-0.5 shrink-0" />
+        <span>
+          Ne crédite jamais sur une capture d&apos;écran envoyée par le client : les fausses captures Wave sont courantes. Vérifie le paiement dans ton
+          appli Wave Business (montant, heure, numéro de l&apos;expéditeur) avant de recharger.
+        </span>
       </p>
       <RechercheCompte value={recherche} onChange={setRecherche} />
       {error && (
