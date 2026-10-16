@@ -63,7 +63,7 @@ export default function AdminPage() {
   return (
     <main className="mx-auto max-w-6xl px-4 pb-24 pt-5 sm:px-6">
       <header className="flex items-center justify-between gap-3">
-        <Logo href={base} />
+        <Logo href={base} compact />
         <div className="flex items-center gap-3">
           <Badge tone="ink">Super admin</Badge>
           <button onClick={logout} className="text-sm font-semibold text-ink/60 underline-offset-4 hover:text-azur hover:underline">

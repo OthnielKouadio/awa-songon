@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
+import { LegalLinks } from "@/components/LegalLinks";
 import { Badge, Btn, Logo, Spinner } from "@/components/ui";
 import {
   BONUS_FIDELITE_POINTS,
@@ -67,7 +68,7 @@ export default function LandingPage() {
 function Header() {
   return (
     <header className="flex items-center justify-between gap-3">
-      <Logo href="/" />
+      <Logo href="/" compact />
       <div className="flex items-center gap-2">
         <Link href="/login" className="rounded-xl border-brut border-ink bg-white px-3 py-2 text-sm font-bold transition-colors hover:bg-sky">
           Se connecter
@@ -255,6 +256,7 @@ function Footer() {
           <Icon name="drop" size={20} /> Commander mon eau maintenant
         </Btn>
       </Link>
+      <LegalLinks className="mt-8" />
     </footer>
   );
 }

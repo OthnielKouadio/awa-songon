@@ -349,13 +349,14 @@ export function StepNumber({ n }: { n: number }) {
   );
 }
 
-export function Logo({ href = "/" }: { href?: string }) {
+/** compact : le nom disparaît sous 380 px de large (header chargé, iPhone SE). */
+export function Logo({ href = "/", compact = false }: { href?: string; compact?: boolean }) {
   return (
-    <Link href={href} aria-label="Distribution Eau" className="flex items-center gap-2.5">
+    <Link href={href} aria-label="Distribution Eau" className="flex shrink-0 items-center gap-2.5">
       <span className="grid h-11 w-11 place-items-center rounded-xl border-brut border-ink bg-sky text-azur shadow-hard-sm">
         <Icon name="drop" size={24} fill />
       </span>
-      <span className="font-display text-xl font-bold tracking-tight">
+      <span className={`font-display text-xl font-bold tracking-tight ${compact ? "hidden min-[380px]:inline" : ""}`}>
         Distribution<span className="text-ink/40"> Eau</span>
       </span>
     </Link>

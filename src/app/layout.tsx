@@ -1,14 +1,29 @@
 import type { Metadata, Viewport } from "next";
 import { Sora, Space_Grotesk } from "next/font/google";
+import CookieBanner from "@/components/CookieBanner";
 import PwaInstall from "@/components/PwaInstall";
+import { siteUrl } from "@/lib/site";
 import "./globals.css";
 
 const sora = Sora({ subsets: ["latin"], variable: "--font-sora", weight: ["600", "700", "800"] });
 const grotesk = Space_Grotesk({ subsets: ["latin"], variable: "--font-grotesk" });
 
+const DESCRIPTION = "Eau pure livrée chez vous à Songon, par tricycle. Commandez en 2 clics et suivez votre livreur en direct.";
+
 export const metadata: Metadata = {
-  title: "Distribution Eau — Livraison d'eau par tricycle",
-  description: "De l'eau à ton lot en 2 clics. Commande ton tricycle de Songon.",
+  metadataBase: new URL(siteUrl),
+  title: "Distribution Eau — Livraison d'eau par tricycle à Songon",
+  description: DESCRIPTION,
+  applicationName: "Distribution Eau",
+  // L'image (opengraph-image.tsx) est ajoutée automatiquement par Next.js.
+  openGraph: {
+    type: "website",
+    locale: "fr_CI",
+    siteName: "Distribution Eau",
+    title: "Distribution Eau — Livraison d'eau à Songon",
+    description: DESCRIPTION,
+  },
+  twitter: { card: "summary_large_image", title: "Distribution Eau — Livraison d'eau à Songon", description: DESCRIPTION },
   // app/manifest.ts est servi automatiquement sur /manifest.webmanifest et lié
   // dans le <head> par Next.js — pas besoin de l'ajouter ici.
   appleWebApp: {
@@ -48,6 +63,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-dvh">
         <PwaInstall />
         {children}
+        <CookieBanner />
       </body>
     </html>
   );
