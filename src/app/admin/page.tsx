@@ -108,11 +108,17 @@ function Console({ creds }: { creds: Creds }) {
 
   useEffect(() => {
     void load();
+    // Canal public : au plus un rechargement complet toutes les 5 s, même sous un
+    // flot de pings (admin_load renvoie toute la base).
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let dernier = 0;
     const unsubscribe = api.admin.subscribe(
       () => {
         if (timer) clearTimeout(timer);
-        timer = setTimeout(() => void load(), 300);
+        timer = setTimeout(() => {
+          dernier = Date.now();
+          void load();
+        }, Math.max(300, dernier + 5000 - Date.now()));
       },
       setLive
     );

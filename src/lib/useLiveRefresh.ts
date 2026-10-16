@@ -19,10 +19,19 @@ export function useLiveRefresh(
   const key = topics.filter(Boolean).join("|");
 
   useEffect(() => {
+    // Les canaux broadcast sont publics : n'importe qui peut y envoyer des pings.
+    // On regroupe les rafales (250 ms) et on recharge au plus une fois toutes les
+    // 3 s, pour qu'un flot de faux pings ne transforme pas chaque téléphone en
+    // relais d'attaque contre la base.
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let dernier = 0;
     const ping = () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => cb.current(), 250); // regroupe les rafales
+      const attente = Math.max(250, dernier + 3000 - Date.now());
+      timer = setTimeout(() => {
+        dernier = Date.now();
+        cb.current();
+      }, attente);
     };
 
     const unsubscribe = api.subscribeTopics(key.split("|").filter(Boolean), ping);
