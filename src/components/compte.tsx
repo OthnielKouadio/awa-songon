@@ -4,7 +4,8 @@ import { useState } from "react";
 import { CustomModal } from "@/components/CustomModal";
 import { Icon } from "@/components/icons";
 import { Badge, Btn, ErrorBox, Field, LinkBtn, PinInput } from "@/components/ui";
-import { errorMessage } from "@/lib/errors";
+import { errorMessage, MESSAGES } from "@/lib/errors";
+import { pinTropSimple } from "@/lib/pin";
 import {
   ALERTE_FIN_ESSAI_JOURS,
   COUT_COMMANDE_CLIENT,
@@ -189,6 +190,7 @@ export function ChangerPinObligatoire({ onSubmit }: { onSubmit: (pin: string) =>
     e.preventDefault();
     setError("");
     if (pin.length !== 4) return setError("Ton code doit faire 4 chiffres.");
+    if (pinTropSimple(pin)) return setError(MESSAGES.PIN_TROP_SIMPLE);
     if (pin !== pin2) return setError("Les deux codes ne sont pas identiques.");
     setBusy(true);
     try {

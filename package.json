@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/lib/phone.test.ts"
+    "test": "node --test src/lib/phone.test.ts src/lib/pin.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

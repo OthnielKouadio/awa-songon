@@ -6,7 +6,8 @@ import { Icon } from "@/components/icons";
 import { CustomSelect } from "@/components/CustomSelect";
 import { Btn, ErrorBox, Field, PhoneInput, PinInput } from "@/components/ui";
 import { api } from "@/lib/data-provider";
-import { errorMessage } from "@/lib/errors";
+import { errorMessage, MESSAGES } from "@/lib/errors";
+import { pinTropSimple } from "@/lib/pin";
 import { byNom, onlyDigits } from "@/lib/format";
 import { phoneCI } from "@/lib/phone";
 import { CompteCree, erreurTelephone } from "./inscription";
@@ -44,6 +45,7 @@ export default function ClientSignupForm({ onSession }: { onSession: (creds: Cre
     const telCI = phoneCI(tel);
     if (errTel || !telCI) return setError(errTel ?? "Numéro de téléphone invalide.");
     if (pin.length !== 4) return setError("Ton code doit faire 4 chiffres.");
+    if (pinTropSimple(pin)) return setError(MESSAGES.PIN_TROP_SIMPLE);
     if (pin !== pin2) return setError("Les deux codes ne sont pas identiques.");
     if (!citeId) return setError("Choisis ta cité.");
     if (!lot.trim()) return setError("Entre ton numéro de lot.");

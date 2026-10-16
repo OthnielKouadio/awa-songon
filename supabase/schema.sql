@@ -703,6 +703,56 @@ update public.admins
    set password_hash = '!desactive-v7', session_hash = null
  where password_hash = public._hash_secret(id, 'admin' || '123');
 
+-- ─── Anti-abus : limites par adresse IP, PIN trop simples ──────────────────
+-- Le blocage par compte (5 échecs → 15 min) ne gêne pas un attaquant qui essaie
+-- « 1234 » sur des centaines de numéros différents, ni un robot qui crée des
+-- comptes en masse. On compte donc aussi les évènements par IP de l'appelant
+-- (en-têtes HTTP transmis par PostgREST). Les seuils restent larges : sur les
+-- réseaux mobiles ivoiriens, beaucoup d'abonnés partagent la même IP (CGNAT).
+create table if not exists public.anti_abus (
+  cle        text        not null,  -- '<type>:<ip>'
+  created_at timestamptz not null default now()
+);
+create index if not exists anti_abus_cle_idx on public.anti_abus (cle, created_at desc);
+alter table public.anti_abus enable row level security;
+revoke all on public.anti_abus from anon, authenticated;
+create index if not exists clients_created_idx   on public.clients (created_at desc);
+create index if not exists tricycles_created_idx on public.tricycles (created_at desc);
+
+-- IP de l'appelant. cf-connecting-ip est posé par Cloudflare (devant l'API
+-- Supabase) et écrase toute valeur envoyée par le client ; repli sur les
+-- en-têtes de proxy classiques. NULL hors requête HTTP (SQL Editor, cron).
+create or replace function public._ip()
+returns text language sql stable as $$
+  select nullif(btrim(coalesce(h->>'cf-connecting-ip', h->>'x-real-ip', split_part(h->>'x-forwarded-for', ',', 1))), '')
+  from (select coalesce(nullif(current_setting('request.headers', true), ''), '{}')::json as h) x
+$$;
+
+-- Au moins p_max évènements p_type pour cette IP sur la fenêtre ? (IP inconnue : non)
+create or replace function public._limite_ip(p_type text, p_max int, p_fenetre interval)
+returns boolean language sql stable security definer set search_path = public as $$
+  select public._ip() is not null
+     and (select count(*) from (select 1 from public.anti_abus
+                                 where cle = p_type || ':' || public._ip() and created_at > now() - p_fenetre
+                                 limit p_max) x) >= p_max
+$$;
+
+create or replace function public._noter_ip(p_type text)
+returns void language sql security definer set search_path = public as $$
+  insert into public.anti_abus (cle) select p_type || ':' || public._ip() where public._ip() is not null
+$$;
+
+-- PIN devinés en premier : 4 chiffres identiques, suites (0123, 9876…), et
+-- quelques classiques. Refusés pour tout NOUVEAU code (les codes existants
+-- restent valides).
+create or replace function public._pin_trop_simple(p text)
+returns boolean language sql immutable as $$
+  select p ~ '^(\d)\1{3}$'
+      or position(p in '0123456789') > 0
+      or position(p in '9876543210') > 0
+      or p in ('1212', '2121', '1122', '1313', '2580', '0852', '6969', '0007', '1004', '2000', '1984', '1990')
+$$;
+
 -- ─── RPC : connexion ────────────────────────────────────────────────────────
 -- Admin : UNIQUEMENT auth_admin_login (email + mot de passe), appelée depuis sa
 -- page secrète. auth_login ne connecte jamais un admin.
@@ -714,12 +764,20 @@ declare
   a public.admins%rowtype;
   v_lock boolean;
 begin
+  -- 10 échecs par IP et par heure, quel que soit l'email essayé.
+  if public._limite_ip('admin', 10, interval '1 hour') then
+    return jsonb_build_object('ok', false, 'error', 'TROP_DE_TENTATIVES');
+  end if;
   select * into a from public.admins where email = v_email for update;
-  if not found then return jsonb_build_object('ok', false, 'error', 'AUTH_ADMIN'); end if;
+  if not found then
+    perform public._noter_ip('admin');
+    return jsonb_build_object('ok', false, 'error', 'AUTH_ADMIN');
+  end if;
   if a.bloque_jusqua is not null and a.bloque_jusqua > now() then
     return jsonb_build_object('ok', false, 'error', 'BLOQUE');
   end if;
   if not public._secret_ok(a.id, p_password, a.password_hash) then
+    perform public._noter_ip('admin');
     v_lock := a.essais + 1 >= 5;
     update public.admins set essais = case when v_lock then 0 else essais + 1 end,
            bloque_jusqua = case when v_lock then now() + interval '15 minutes' else null end
@@ -747,6 +805,11 @@ declare
   v_bloque boolean := false;
   v_lock boolean;
 begin
+  -- 30 échecs par IP sur 15 min, tous numéros confondus (essai d'un même code
+  -- sur beaucoup de comptes). Les connexions réussies ne comptent pas.
+  if public._limite_ip('login', 30, interval '15 minutes') then
+    return jsonb_build_object('ok', false, 'error', 'TROP_DE_TENTATIVES');
+  end if;
   if p_role in ('client', 'auto') then
     select * into cl from public.clients where telephone = v_tel and not is_temporary for update;
     v_cl := found;
@@ -755,7 +818,10 @@ begin
     select * into t from public.tricycles where telephone = v_tel for update;
     v_t := found;
   end if;
-  if not v_cl and not v_t then return jsonb_build_object('ok', false, 'error', 'AUTH'); end if;
+  if not v_cl and not v_t then
+    perform public._noter_ip('login');
+    return jsonb_build_object('ok', false, 'error', 'AUTH');
+  end if;
 
   if v_cl and (cl.pin_bloque_jusqua is null or cl.pin_bloque_jusqua <= now()) and public._secret_ok(cl.id, p_pin, cl.pin_hash) then
     update public.clients set pin_essais = 0, pin_bloque_jusqua = null, session_hash = public._hash_token(v_token),
@@ -771,7 +837,8 @@ begin
     return jsonb_build_object('ok', true, 'role', 'chauffeur', 'token', v_token, 'profile', public._chauffeur_profil(t.id));
   end if;
 
-  -- Échec : un essai de plus sur chaque compte de ce numéro.
+  -- Échec : un essai de plus sur chaque compte de ce numéro, et sur l'IP.
+  perform public._noter_ip('login');
   if v_cl then
     if cl.pin_bloque_jusqua is not null and cl.pin_bloque_jusqua > now() then
       v_bloque := true;
@@ -813,10 +880,17 @@ begin
   if v_nom = '' or length(v_nom) > 40 then raise exception 'NOM_INVALIDE'; end if;
   if public._phone_ci(v_tel) is null then raise exception 'TEL_INVALIDE_CI'; end if;
   if p_pin is null or p_pin !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
+  if public._pin_trop_simple(p_pin) then raise exception 'PIN_TROP_SIMPLE'; end if;
   if v_lot = '' or length(v_lot) > 20 then raise exception 'LOT_INVALIDE'; end if;
   if not exists (select 1 from public.cites where id = p_cite) then raise exception 'CITE_INTROUVABLE'; end if;
   if exists (select 1 from public.admins where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
   if exists (select 1 from public.clients where telephone = v_tel and not is_temporary) then raise exception 'DEJA_INSCRIT'; end if;
+  -- Anti-robot : 10 comptes par IP et par heure, 300 par heure au total.
+  if public._limite_ip('inscription', 10, interval '1 hour')
+     or (select count(*) from public.clients where created_at > now() - interval '1 hour') >= 300 then
+    raise exception 'TROP_DE_TENTATIVES';
+  end if;
+  perform public._noter_ip('inscription');
 
   if p_lat is null or p_long is null or p_lat not between -90 and 90 or p_long not between -180 and 180 then
     p_lat := null; p_long := null;
@@ -859,6 +933,7 @@ begin
   if v_nom = '' or length(v_nom) > 40 then raise exception 'NOM_INVALIDE'; end if;
   if public._phone_ci(v_tel) is null then raise exception 'TEL_INVALIDE_CI'; end if;
   if p_pin is null or p_pin !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
+  if public._pin_trop_simple(p_pin) then raise exception 'PIN_TROP_SIMPLE'; end if;
   if p_prix is null or p_prix not between 100 and 50000 then raise exception 'PRIX_INVALIDE'; end if;
   if p_cite is null or not exists (select 1 from public.cites where id = p_cite) then raise exception 'CITE_INTROUVABLE'; end if;
   if p_source is not null and not exists (select 1 from public.sources where id = p_source and cite_id = p_cite) then
@@ -866,6 +941,12 @@ begin
   end if;
   if exists (select 1 from public.admins where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
   if exists (select 1 from public.tricycles where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
+  -- Anti-robot : 5 chauffeurs par IP et par heure, 50 par heure au total.
+  if public._limite_ip('inscription_chauffeur', 5, interval '1 hour')
+     or (select count(*) from public.tricycles where created_at > now() - interval '1 hour') >= 50 then
+    raise exception 'TROP_DE_TENTATIVES';
+  end if;
+  perform public._noter_ip('inscription_chauffeur');
 
   insert into public.tricycles (id, nom, telephone, cite_id, source_id, prix_1000, statut, pin_hash, session_hash,
                                 solde_points, essai_fin, valide)
@@ -1497,6 +1578,7 @@ do $$ begin
   perform cron.schedule('awa-release-programmed', '0 0 * * *',  'select public.release_programmed_orders()');
   perform cron.schedule('awa-release-8h',        '0 8 * * *',  'select public.release_programmed_orders()');
   perform cron.schedule('awa-purge-positions',   '*/5 * * * *', 'select public.purge_positions_live()');
+  perform cron.schedule('awa-purge-anti-abus',   '17 * * * *',  $c$delete from public.anti_abus where created_at < now() - interval '1 day'$c$);
 exception when others then
   raise warning 'pg_cron indisponible (%). Active l''extension pg_cron puis relance ce script.', sqlerrm;
 end $$;
@@ -1643,6 +1725,7 @@ returns void language plpgsql security definer set search_path = public as $$
 declare v uuid := public._auth_client(p_tel, p_token);
 begin
   if p_nouveau is null or p_nouveau !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
+  if public._pin_trop_simple(p_nouveau) then raise exception 'PIN_TROP_SIMPLE'; end if;
   update public.clients set pin_hash = public._hash_pin(p_nouveau), pin_provisoire = false where id = v;
 end $$;
 
@@ -1651,6 +1734,7 @@ returns void language plpgsql security definer set search_path = public as $$
 declare v uuid := public._auth_tricycle(p_tel, p_token);
 begin
   if p_nouveau is null or p_nouveau !~ '^[0-9]{4}$' then raise exception 'PIN_INVALIDE'; end if;
+  if public._pin_trop_simple(p_nouveau) then raise exception 'PIN_TROP_SIMPLE'; end if;
   update public.tricycles set pin_hash = public._hash_pin(p_nouveau), pin_provisoire = false where id = v;
 end $$;
 
@@ -1886,3 +1970,8 @@ revoke execute on function public._debiter_chauffeur(uuid, uuid) from public, an
 revoke execute on function public._en_essai(timestamptz)       from public, anon, authenticated;
 revoke execute on function public._fin_essai_nouveau()         from public, anon, authenticated;
 revoke execute on function public._journaliser_facturation(uuid) from public, anon, authenticated;
+-- Anti-abus : utilitaires internes.
+revoke execute on function public._ip()                              from public, anon, authenticated;
+revoke execute on function public._limite_ip(text, int, interval)   from public, anon, authenticated;
+revoke execute on function public._noter_ip(text)                    from public, anon, authenticated;
+revoke execute on function public._pin_trop_simple(text)             from public, anon, authenticated;

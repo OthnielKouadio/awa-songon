@@ -9,6 +9,8 @@ export const MESSAGES: Record<string, string> = {
   SERVICE_INDISPONIBLE: "Le serveur ne répond pas pour l'instant. Réessaie dans un instant.",
   NOM_INVALIDE: "Entre ton nom.",
   PIN_INVALIDE: "Ton code doit faire 4 chiffres.",
+  PIN_TROP_SIMPLE: "Code trop facile à deviner (0000, 1234…). Choisis-en un autre.",
+  TROP_DE_TENTATIVES: "Trop de tentatives depuis ta connexion. Réessaie plus tard.",
   SOURCE_INTROUVABLE: "Choisis ta source.",
   CITE_INTROUVABLE: "Choisis ta cité.",
   LOT_INVALIDE: "Numéro de lot invalide.",

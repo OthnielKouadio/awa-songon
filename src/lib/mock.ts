@@ -25,7 +25,8 @@ import {
   revenuCommande,
   WAVE_MARCHAND_DEFAUT,
 } from "./format";
-import { normalizePhone, phoneCI } from "./phone";
+import { normalizePhone, phoneCI } from "./phone";
+import { pinTropSimple } from "./pin";
 import type {
   AdminData,
   AdminTable,
@@ -848,6 +849,7 @@ export const mock: Backend = {
       if (!nom || nom.length > 40) return fail("NOM_INVALIDE");
       if (tel.length < 8 || tel.length > 16) return fail("TEL_INVALIDE");
       if (!/^[0-9]{4}$/.test(i.pin)) return fail("PIN_INVALIDE");
+      if (pinTropSimple(i.pin)) return fail("PIN_TROP_SIMPLE");
       if (!lot || lot.length > 20) return fail("LOT_INVALIDE");
       if (!db.cites.some((c) => c.id === i.citeId)) return fail("CITE_INTROUVABLE");
       if (db.clients.some((c) => c.telephone === tel && !c.is_temporary)) return fail("DEJA_INSCRIT");
@@ -903,6 +905,7 @@ export const mock: Backend = {
       if (!nom || nom.length > 40) return fail("NOM_INVALIDE");
       if (tel.length < 8 || tel.length > 16) return fail("TEL_INVALIDE");
       if (!/^[0-9]{4}$/.test(i.pin)) return fail("PIN_INVALIDE");
+      if (pinTropSimple(i.pin)) return fail("PIN_TROP_SIMPLE");
       if (!prixValide(i.prix)) return fail("PRIX_INVALIDE");
       if (!i.citeId || !db.cites.some((c) => c.id === i.citeId)) return fail("CITE_INTROUVABLE");
       if (i.sourceId && !db.sources.some((s) => s.id === i.sourceId && s.cite_id === i.citeId)) return fail("SOURCE_INTROUVABLE");
@@ -975,6 +978,7 @@ export const mock: Backend = {
     tx((db) => {
       const cl = authClient(db, c);
       if (!/^[0-9]{4}$/.test(nouveau)) return fail("PIN_INVALIDE");
+      if (pinTropSimple(nouveau)) return fail("PIN_TROP_SIMPLE");
       cl.pin = nouveau;
       cl.pin_provisoire = false;
     });
@@ -1173,6 +1177,7 @@ export const mock: Backend = {
     tx((db) => {
       const t = authTricycle(db, c);
       if (!/^[0-9]{4}$/.test(nouveau)) return fail("PIN_INVALIDE");
+      if (pinTropSimple(nouveau)) return fail("PIN_TROP_SIMPLE");
       t.pin = nouveau;
       t.pin_provisoire = false;
     });
