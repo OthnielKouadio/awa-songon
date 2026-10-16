@@ -13,9 +13,18 @@ import { type Area, INTERNAL, privatePaths, readSessionCookie, SESSION_COOKIE, v
  *     session d'un autre rôle           → 404 (pas 403 : on ne confirme pas que la page existe)
  * - dossiers réels (/admin, /chauffeur, /acces-admin, /recrutement-chauffeur) → 404
  * - ?demo=… hors mode démo → retiré de l'URL
+ * - http:// en production → https:// (301)
  */
 export async function middleware(req: NextRequest) {
   const { pathname, searchParams } = req.nextUrl;
+
+  // Vercel redirige déjà vers HTTPS ; filet de sécurité derrière un autre proxy.
+  if (process.env.NODE_ENV === "production" && req.headers.get("x-forwarded-proto")?.split(",")[0].trim() === "http") {
+    const url = req.nextUrl.clone();
+    url.protocol = "https:";
+    url.port = "";
+    return NextResponse.redirect(url, 301);
+  }
 
   if (searchParams.has("demo") && process.env.NEXT_PUBLIC_DEMO_MODE !== "true") {
     const url = req.nextUrl.clone();
@@ -66,5 +75,5 @@ function notFound(req: NextRequest) {
 
 export const config = {
   // Tout sauf l'API, les fichiers Next et les fichiers statiques.
-  matcher: ["/((?!api/|_next/|icons/|sw\\.js|manifest\\.webmanifest|favicon|icon\\.png|apple-icon\\.png).*)"],
+  matcher: ["/((?!api/|_next/|icons/|sw\\.js|manifest\\.webmanifest|favicon|icon\\.png|apple-icon\\.png|robots\\.txt|sitemap\\.xml|opengraph-image).*)"],
 };

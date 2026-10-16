@@ -12,12 +12,15 @@ if (process.env.NODE_ENV === "production" && demoMode === "true" && process.env.
 
 // En-têtes de sécurité sur toutes les réponses : pas d'affichage dans une iframe
 // d'un autre site (faux clics), pas de devinette de type MIME, HTTPS forcé, et
-// seul le GPS est autorisé (demandé par l'appli elle-même).
+// seul le GPS est autorisé (demandé par l'appli elle-même). Referrer : les autres
+// sites ne reçoivent que l'origine, jamais le chemin (les chemins secrets restent
+// secrets) — mais un Referer est bien envoyé, les tuiles OSM l'exigent.
 const securityHeaders = [
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" },
   { key: "X-Content-Type-Options", value: "nosniff" },
-  { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
+  { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "geolocation=(self), camera=(), microphone=(), payment=(), usb=()" },
 ];
 

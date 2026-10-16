@@ -26,7 +26,7 @@ export const INTERNAL = {
 } as const;
 export type Area = keyof typeof INTERNAL;
 
-const RESERVED = new Set([...Object.values(INTERNAL), "client", "dashboard", "login", "inscription", "bloque", "suivi", "api", "_next", "icons"]);
+const RESERVED = new Set([...Object.values(INTERNAL), "client", "dashboard", "login", "inscription", "bloque", "suivi", "cgu", "confidentialite", "api", "_next", "icons"]);
 const SAFE = /^[A-Za-z0-9_-]{8,64}$/;
 
 function valid(p: string | undefined): string | null {
