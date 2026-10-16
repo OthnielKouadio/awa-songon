@@ -184,7 +184,9 @@ do $$ begin
     add constraint points_transactions_titulaire_chk check ((tricycle_id is not null) <> (client_id is not null));
 exception when duplicate_object then null;
 end $$;
-create index if not exists points_transactions_client_idx on public.points_transactions (client_id);
+-- (client_id, created_at desc) : sert aussi les recherches par client_id seul.
+drop index if exists public.points_transactions_client_idx;
+create index if not exists points_transactions_client_date_idx on public.points_transactions (client_id, created_at desc);
 
 -- Migration : un chauffeur n'a plus qu'UNE cité (tricycles.cite_id). L'ancienne
 -- table plusieurs-à-plusieurs tricycle_cites est reprise une dernière fois

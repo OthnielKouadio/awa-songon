@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "@/lib/data-provider";
 import { errorMessage } from "@/lib/errors";
 import { normalizePhone } from "@/lib/phone";
@@ -33,6 +33,39 @@ export function useMutation(reload: () => Promise<void>) {
   );
 
   return { run, busy, error, setError };
+}
+
+/**
+ * Affichage progressif des longues listes admin : PAS lignes d'abord, puis PAS de
+ * plus quand le bas de la liste approche de l'écran (bouton en secours). Les
+ * données sont déjà chargées (admin_load) : on évite seulement de monter des
+ * milliers de lignes d'un coup. `reset` (ex. la recherche) revient au début.
+ */
+export function usePagination<T>(items: T[], reset: unknown, pas = 50) {
+  const [limite, setLimite] = useState(pas);
+  useEffect(() => setLimite(pas), [reset, pas]);
+  const plus = useCallback(() => setLimite((l) => l + pas), [pas]);
+  const reste = items.length - limite;
+  return {
+    visibles: reste > 0 ? items.slice(0, limite) : items,
+    suite: reste > 0 ? <PlusDeLignes reste={reste} onPlus={plus} /> : null,
+  };
+}
+
+function PlusDeLignes({ reste, onPlus }: { reste: number; onPlus: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(([e]) => e?.isIntersecting && onPlus(), { rootMargin: "300px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [onPlus]);
+  return (
+    <button ref={ref} type="button" onClick={onPlus} className="mt-3 w-full rounded-xl border-[1.5px] border-ink/20 py-2.5 text-sm font-bold text-ink/70 hover:border-ink/50">
+      Afficher plus ({reste} restant{reste > 1 ? "s" : ""})
+    </button>
+  );
 }
 
 export function Panel({ title, children }: { title: string; children: ReactNode }) {

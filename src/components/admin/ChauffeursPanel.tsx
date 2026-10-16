@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { api } from "@/lib/data-provider";
 import { CHAUFFEUR_STATUS_LABEL, COMMANDES_ACTIVES, formatFcfa, heure, QUANTITE_L } from "@/lib/format";
 import type { AdminData, CompteStatut, Creds } from "@/lib/types";
@@ -9,7 +9,7 @@ import { useConfirm } from "../CustomModal";
 import { Icon } from "../icons";
 import { Badge, CommandeBadge, ErrorBox, SourceBadge, StatutBadge, Table, TableBtn, Td, Th } from "../ui";
 import { EssaiCell } from "./ClientsPanel";
-import { correspond, Panel, RechercheCompte, useCodeProvisoire, useMutation } from "./shared";
+import { correspond, Panel, RechercheCompte, useCodeProvisoire, useMutation, usePagination } from "./shared";
 
 export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, error } = useMutation(reload);
@@ -20,6 +20,17 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
   // Chauffeurs à valider en premier : ils attendent une décision de l'admin.
   const tricycles = data.tricycles.filter((t) => correspond(t, recherche)).sort((a, b) => Number(a.valide) - Number(b.valide));
   const enAttente = data.tricycles.filter((t) => !t.valide).length;
+  const { visibles, suite } = usePagination(tricycles, recherche);
+  // Commandes groupées par chauffeur en un seul passage.
+  const commandesPar = useMemo(() => {
+    const m = new Map<string, AdminData["commandes"]>();
+    for (const c of data.commandes) {
+      const l = m.get(c.tricycle_id);
+      if (l) l.push(c);
+      else m.set(c.tricycle_id, [c]);
+    }
+    return m;
+  }, [data.commandes]);
   const citeNom = (id: string) => data.cites.find((c) => c.id === id)?.nom ?? "?";
   const sourceLabel = (id: string | null) => (id && data.sources.find((x) => x.id === id)?.nom) || "—";
 
@@ -75,8 +86,8 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
           </tr>
         </thead>
         <tbody>
-          {tricycles.map((t) => {
-            const commandes = data.commandes.filter((c) => c.tricycle_id === t.id);
+          {visibles.map((t) => {
+            const commandes = commandesPar.get(t.id) ?? [];
             const enCours = commandes.filter((c) => COMMANDES_ACTIVES.includes(c.status)).length;
             return (
               <Fragment key={t.id}>
@@ -147,6 +158,7 @@ export default function ChauffeursPanel({ creds, data, reload }: { creds: Creds;
           })}
         </tbody>
       </Table>
+      {suite}
       {data.tricycles.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun chauffeur inscrit.</p>}
       {data.tricycles.length > 0 && tricycles.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun chauffeur ne correspond à « {recherche} ».</p>}
       {ConfirmDialog}

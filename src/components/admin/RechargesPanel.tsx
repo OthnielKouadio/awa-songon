@@ -6,7 +6,7 @@ import { enEssai, formatPoints, jour, onlyDigits, RECHARGE_MULTIPLE, RECHARGE_MU
 import type { AdminData, Creds } from "@/lib/types";
 import { Icon } from "../icons";
 import { Badge, ErrorBox, Table, TableBtn, Td, Th } from "../ui";
-import { correspond, Panel, RechercheCompte, useMutation } from "./shared";
+import { correspond, Panel, RechercheCompte, useMutation, usePagination } from "./shared";
 
 type Titulaire = { id: string; nom: string; telephone: string; solde_points: number; essai_fin: string | null; hors_ligne?: boolean };
 
@@ -79,54 +79,58 @@ function RechargeTable({
   setInputs: (fn: (s: Record<string, string>) => Record<string, string>) => void;
   onRecharger: (id: string) => void;
 }) {
+  const { visibles, suite } = usePagination(titulaires, titulaires.length);
   if (titulaires.length === 0) return null;
   return (
-    <Table>
-      <thead>
-        <tr>
-          <Th>Nom</Th>
-          <Th>Téléphone</Th>
-          <Th>Solde</Th>
-          <Th>Recharger</Th>
-        </tr>
-      </thead>
-      <tbody>
-        {titulaires.map((t) => {
-          const essai = enEssai(t.essai_fin);
-          const faible = !essai && t.solde_points < seuil;
-          return (
-            <tr key={t.id}>
-              <Td>
-                <span className="font-bold">{t.nom}</span>
-              </Td>
-              <Td>{t.telephone}</Td>
-              <Td>
-                <Badge tone={faible ? "danger" : "sky"}>
-                  {formatPoints(t.solde_points)}
-                  {t.hors_ligne && " · hors ligne"}
-                </Badge>
-                {essai && t.essai_fin && <span className="ml-2 text-xs font-semibold text-ink/55">essai jusqu&apos;au {jour(t.essai_fin)}</span>}
-              </Td>
-              <Td>
-                <div className="flex items-center gap-2">
-                  <input
-                    className="field !w-28 !py-2 text-sm"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    placeholder="1000"
-                    aria-label={`Montant à ajouter pour ${t.nom}`}
-                    value={inputs[t.id] ?? ""}
-                    onChange={(e) => setInputs((s) => ({ ...s, [t.id]: onlyDigits(e.target.value, 6) }))}
-                  />
-                  <TableBtn tone="azur" disabled={!inputs[t.id]} onClick={() => onRecharger(t.id)}>
-                    Recharger
-                  </TableBtn>
-                </div>
-              </Td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </Table>
+    <>
+      <Table>
+        <thead>
+          <tr>
+            <Th>Nom</Th>
+            <Th>Téléphone</Th>
+            <Th>Solde</Th>
+            <Th>Recharger</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {visibles.map((t) => {
+            const essai = enEssai(t.essai_fin);
+            const faible = !essai && t.solde_points < seuil;
+            return (
+              <tr key={t.id}>
+                <Td>
+                  <span className="font-bold">{t.nom}</span>
+                </Td>
+                <Td>{t.telephone}</Td>
+                <Td>
+                  <Badge tone={faible ? "danger" : "sky"}>
+                    {formatPoints(t.solde_points)}
+                    {t.hors_ligne && " · hors ligne"}
+                  </Badge>
+                  {essai && t.essai_fin && <span className="ml-2 text-xs font-semibold text-ink/55">essai jusqu&apos;au {jour(t.essai_fin)}</span>}
+                </Td>
+                <Td>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="field !w-28 !py-2 text-sm"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      placeholder="1000"
+                      aria-label={`Montant à ajouter pour ${t.nom}`}
+                      value={inputs[t.id] ?? ""}
+                      onChange={(e) => setInputs((s) => ({ ...s, [t.id]: onlyDigits(e.target.value, 6) }))}
+                    />
+                    <TableBtn tone="azur" disabled={!inputs[t.id]} onClick={() => onRecharger(t.id)}>
+                      Recharger
+                    </TableBtn>
+                  </div>
+                </Td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </Table>
+      {suite}
+    </>
   );
 }

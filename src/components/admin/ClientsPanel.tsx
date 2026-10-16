@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { api } from "@/lib/data-provider";
 import { enEssai, jour } from "@/lib/format";
 import type { AdminData, CompteStatut, Creds } from "@/lib/types";
 import { useConfirm } from "../CustomModal";
 import { Badge, ErrorBox, StatutBadge, Table, TableBtn, Td, Th } from "../ui";
-import { correspond, Panel, RechercheCompte, useCodeProvisoire, useMutation } from "./shared";
+import { correspond, Panel, RechercheCompte, useCodeProvisoire, useMutation, usePagination } from "./shared";
 
 export default function ClientsPanel({ creds, data, reload }: { creds: Creds; data: AdminData; reload: () => Promise<void> }) {
   const { run, error } = useMutation(reload);
@@ -14,6 +14,13 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
   const pin = useCodeProvisoire(creds, reload);
   const [recherche, setRecherche] = useState("");
   const clients = data.clients.filter((c) => correspond(c, recherche));
+  const { visibles, suite } = usePagination(clients, recherche);
+  // Un seul passage sur les commandes (au lieu d'un filtre complet par ligne).
+  const nbCommandes = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const cm of data.commandes) m.set(cm.client_id, (m.get(cm.client_id) ?? 0) + 1);
+    return m;
+  }, [data.commandes]);
   const citeNom = (id: string) => data.cites.find((c) => c.id === id)?.nom ?? "?";
 
   function setStatut(id: string, statut: CompteStatut) {
@@ -52,8 +59,8 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
           </tr>
         </thead>
         <tbody>
-          {clients.map((c) => {
-            const nb = data.commandes.filter((cm) => cm.client_id === c.id).length;
+          {visibles.map((c) => {
+            const nb = nbCommandes.get(c.id) ?? 0;
             return (
               <tr key={c.id}>
                 <Td>
@@ -103,6 +110,7 @@ export default function ClientsPanel({ creds, data, reload }: { creds: Creds; da
           })}
         </tbody>
       </Table>
+      {suite}
       {data.clients.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun client inscrit.</p>}
       {data.clients.length > 0 && clients.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucun client ne correspond à « {recherche} ».</p>}
       {ConfirmDialog}

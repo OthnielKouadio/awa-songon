@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { FILTRES_SOURCE, type FiltreSource, formatFcfa, heure, jour, QUANTITE_L } from "@/lib/format";
 import type { AdminData, CommandeStatus } from "@/lib/types";
 import { CommandeBadge, SegmentedFilter, SourceBadge, Table, Td, Th } from "../ui";
-import { Panel } from "./shared";
+import { Panel, usePagination } from "./shared";
 
 const FILTERS: { id: CommandeStatus | ""; label: string }[] = [
   { id: "", label: "Toutes" },
@@ -26,7 +26,8 @@ export default function CommandesPanel({ data }: { data: AdminData }) {
   const chauffeurNom = (id: string | null) => data.tricycles.find((t) => t.id === id)?.nom ?? "Chauffeur supprimé";
 
   const parStatut = useMemo(() => data.commandes.filter((c) => !filtre || c.status === filtre), [data.commandes, filtre]);
-  const rows = useMemo(() => parStatut.filter((c) => source === "all" || c.source === source).slice(0, 200), [parStatut, source]);
+  const rows = useMemo(() => parStatut.filter((c) => source === "all" || c.source === source), [parStatut, source]);
+  const { visibles, suite } = usePagination(rows, `${filtre}|${source}`);
 
   return (
     <Panel title="Commandes en temps réel">
@@ -66,7 +67,7 @@ export default function CommandesPanel({ data }: { data: AdminData }) {
         </thead>
         <tbody>
           <AnimatePresence initial={false}>
-            {rows.map((c) => (
+            {visibles.map((c) => (
               <motion.tr key={c.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                 <Td>
                   <span className="font-semibold">{clientNom(c.client_id)}</span>
@@ -100,6 +101,7 @@ export default function CommandesPanel({ data }: { data: AdminData }) {
           </AnimatePresence>
         </tbody>
       </Table>
+      {suite}
       {rows.length === 0 && <p className="mt-4 font-semibold text-ink/60">Aucune commande.</p>}
     </Panel>
   );

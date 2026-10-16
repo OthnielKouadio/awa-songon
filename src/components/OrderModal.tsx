@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/data-provider";
 import { errorMessage } from "@/lib/errors";
 import { estimerMinutes, formatFcfa, formatMinutes, HEURE_LIMITE_ANNULATION, jourAbidjan, QUANTITE_L } from "@/lib/format";
@@ -33,16 +33,21 @@ export default function OrderModal({
   const [error, setError] = useState("");
 
   const [jour, setJour] = useState<"today" | "tomorrow">("today");
+  // Verrou synchrone : deux taps rapprochés arrivent avant que `busy` ne désactive
+  // le bouton (l'état React n'est appliqué qu'au rendu suivant).
+  const envoi = useRef(false);
 
   useEffect(() => {
     if (tricycle) {
       setError("");
       setJour("today");
+      envoi.current = false;
     }
   }, [tricycle]);
 
   async function submit() {
-    if (!tricycle) return;
+    if (!tricycle || envoi.current) return;
+    envoi.current = true;
     setBusy(true);
     setError("");
     try {
@@ -54,6 +59,7 @@ export default function OrderModal({
     } catch (e) {
       setError(errorMessage(e));
       setBusy(false);
+      envoi.current = false;
     }
   }
 
