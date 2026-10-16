@@ -13,13 +13,15 @@ import { type Area, INTERNAL, privatePaths, readSessionCookie, SESSION_COOKIE, v
  *     session d'un autre rôle           → 404 (pas 403 : on ne confirme pas que la page existe)
  * - dossiers réels (/admin, /chauffeur, /acces-admin, /recrutement-chauffeur) → 404
  * - ?demo=… hors mode démo → retiré de l'URL
- * - http:// en production → https:// (301)
+ * - http:// → https:// (301) si FORCE_HTTPS=true
  */
 export async function middleware(req: NextRequest) {
   const { pathname, searchParams } = req.nextUrl;
 
   // Vercel redirige déjà vers HTTPS ; filet de sécurité derrière un autre proxy.
-  if (process.env.NODE_ENV === "production" && req.headers.get("x-forwarded-proto")?.split(",")[0].trim() === "http") {
+  // Activable seulement : sans proxy HTTPS devant (ex. `next start` en local),
+  // la requête arrive toujours en http et la redirection bouclerait.
+  if (process.env.FORCE_HTTPS === "true" && req.headers.get("x-forwarded-proto")?.split(",")[0].trim() === "http") {
     const url = req.nextUrl.clone();
     url.protocol = "https:";
     url.port = "";
