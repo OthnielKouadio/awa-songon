@@ -75,6 +75,25 @@ export async function verifySession(c: Creds): Promise<boolean> {
   return (await checkSession(c)) === "valide";
 }
 
+/** Déconnexion : efface le jeton en base (RPC session_fermer), pour qu'une copie
+ *  volée ne serve plus. Best effort : un échec ne bloque pas la déconnexion locale. */
+export async function closeSession(c: Creds): Promise<void> {
+  if (process.env.NEXT_PUBLIC_DEMO_MODE === "true") return;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) return;
+  try {
+    await fetch(`${url}/rest/v1/rpc/session_fermer`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ p_role: c.role, p_tel: c.tel, p_token: c.token }),
+      cache: "no-store",
+    });
+  } catch (e) {
+    console.error("[session] fermeture impossible", e);
+  }
+}
+
 /** Comme verifySession, mais distingue un jeton refusé d'une vérification
  *  impossible (base injoignable, schema.sql pas appliqué…) pour ne pas afficher
  *  « numéro ou code incorrect » à quelqu'un qui vient de s'inscrire. */

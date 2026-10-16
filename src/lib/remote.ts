@@ -88,7 +88,7 @@ export const remote: Backend = {
   },
 
   async inscrireClient(i) {
-    const r = await rpc<{ token: string; profile: ClientProfile }>("inscrire_client", {
+    const r = await rpc<{ token: string; profile: ClientProfile; error?: string }>("inscrire_client", {
       p_nom: i.nom,
       p_tel: i.tel,
       p_cite: i.citeId,
@@ -97,11 +97,12 @@ export const remote: Backend = {
       p_lat: i.gps?.lat ?? null,
       p_long: i.gps?.long ?? null,
     });
+    if (r.error) throw new AppError(r.error); // DEJA_INSCRIT : renvoyé, pas levé (voir schema.sql)
     return { creds: { role: "client", tel: r.profile.telephone, token: r.token }, profile: r.profile };
   },
 
   async inscrireChauffeur(i) {
-    const r = await rpc<{ token: string; profile: ChauffeurProfile }>("inscrire_chauffeur", {
+    const r = await rpc<{ token: string; profile: ChauffeurProfile; error?: string }>("inscrire_chauffeur", {
       p_nom: i.nom,
       p_tel: i.tel,
       p_cite: i.citeId,
@@ -109,6 +110,7 @@ export const remote: Backend = {
       p_pin: i.pin,
       p_prix: i.prix,
     });
+    if (r.error) throw new AppError(r.error);
     return { creds: { role: "chauffeur", tel: r.profile.telephone, token: r.token }, profile: r.profile };
   },
 

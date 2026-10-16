@@ -608,6 +608,38 @@ returns text language sql volatile as $$
   select replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '')
 $$;
 
+-- Expiration des sessions : un jeton n'est valable que 60 jours après la
+-- dernière vérification par l'appli (session_valide le prolonge). Posée par
+-- trigger dès qu'un nouveau jeton est enregistré, pour ne toucher à aucune
+-- fonction métier. Un jeton volé finit donc par mourir, même sans reconnexion.
+alter table public.clients   add column if not exists session_expire timestamptz;
+alter table public.tricycles add column if not exists session_expire timestamptz;
+alter table public.admins    add column if not exists session_expire timestamptz;
+-- Migration : les sessions ouvertes restent valides 60 jours (personne n'est déconnecté).
+update public.clients   set session_expire = now() + interval '60 days' where session_hash is not null and session_expire is null;
+update public.tricycles set session_expire = now() + interval '60 days' where session_hash is not null and session_expire is null;
+update public.admins    set session_expire = now() + interval '60 days' where session_hash is not null and session_expire is null;
+
+create or replace function public._trg_session_expire()
+returns trigger language plpgsql as $$
+begin
+  if new.session_hash is null then
+    new.session_expire := null;
+  elsif tg_op = 'INSERT' or new.session_hash is distinct from old.session_hash then
+    new.session_expire := now() + interval '60 days';
+  end if;
+  return new;
+end $$;
+drop trigger if exists clients_session_expire on public.clients;
+create trigger clients_session_expire before insert or update of session_hash on public.clients
+  for each row execute function public._trg_session_expire();
+drop trigger if exists tricycles_session_expire on public.tricycles;
+create trigger tricycles_session_expire before insert or update of session_hash on public.tricycles
+  for each row execute function public._trg_session_expire();
+drop trigger if exists admins_session_expire on public.admins;
+create trigger admins_session_expire before insert or update of session_hash on public.admins
+  for each row execute function public._trg_session_expire();
+
 -- Essai gratuit en cours pour ce compte ?
 create or replace function public._en_essai(p_fin timestamptz)
 returns boolean language sql stable as $$
@@ -651,7 +683,8 @@ returns uuid language plpgsql stable security definer set search_path = public a
 declare v uuid;
 begin
   select t.id into v from public.tricycles t
-   where t.telephone = public.normalize_phone(p_tel) and t.session_hash is not null and t.session_hash = public._hash_token(p_token);
+   where t.telephone = public.normalize_phone(p_tel) and t.session_hash is not null and t.session_hash = public._hash_token(p_token)
+     and t.session_expire > now();
   if v is null then raise exception 'AUTH'; end if;
   return v;
 end $$;
@@ -661,7 +694,8 @@ returns uuid language plpgsql stable security definer set search_path = public a
 declare v uuid;
 begin
   select cl.id into v from public.clients cl
-   where cl.telephone = public.normalize_phone(p_tel) and cl.session_hash is not null and cl.session_hash = public._hash_token(p_token);
+   where cl.telephone = public.normalize_phone(p_tel) and cl.session_hash is not null and cl.session_hash = public._hash_token(p_token)
+     and cl.session_expire > now();
   if v is null then raise exception 'AUTH'; end if;
   return v;
 end $$;
@@ -672,7 +706,8 @@ declare v uuid;
 begin
   -- p_tel porte l'email de l'admin (même champ « identifiant » que les autres rôles).
   select a.id into v from public.admins a
-   where a.email = lower(btrim(p_tel)) and a.session_hash is not null and a.session_hash = public._hash_token(p_token);
+   where a.email = lower(btrim(p_tel)) and a.session_hash is not null and a.session_hash = public._hash_token(p_token)
+     and a.session_expire > now();
   if v is null then raise exception 'REFUSE'; end if;
   return v;
 end $$;
@@ -762,7 +797,6 @@ declare
   v_email text := lower(btrim(coalesce(p_email, '')));
   v_token text := public._new_token();
   a public.admins%rowtype;
-  v_lock boolean;
 begin
   -- 10 échecs par IP et par heure, quel que soit l'email essayé.
   if public._limite_ip('admin', 10, interval '1 hour') then
@@ -773,16 +807,19 @@ begin
     perform public._noter_ip('admin');
     return jsonb_build_object('ok', false, 'error', 'AUTH_ADMIN');
   end if;
-  if a.bloque_jusqua is not null and a.bloque_jusqua > now() then
+  -- Plus de blocage du compte après 5 échecs : n'importe qui connaissant l'email
+  -- pouvait bloquer l'admin en boucle. Les échecs sont limités PAR IP (ci-dessus) ;
+  -- le compte n'est gelé que sous une attaque répartie sur beaucoup d'IP
+  -- (50 échecs en 1 h, toutes IP confondues), hors de portée d'un attaquant seul.
+  if (select count(*) from (select 1 from public.anti_abus
+                             where cle = 'admin_compte:' || a.id and created_at > now() - interval '1 hour'
+                             limit 50) x) >= 50 then
     return jsonb_build_object('ok', false, 'error', 'BLOQUE');
   end if;
   if not public._secret_ok(a.id, p_password, a.password_hash) then
     perform public._noter_ip('admin');
-    v_lock := a.essais + 1 >= 5;
-    update public.admins set essais = case when v_lock then 0 else essais + 1 end,
-           bloque_jusqua = case when v_lock then now() + interval '15 minutes' else null end
-     where id = a.id;
-    return jsonb_build_object('ok', false, 'error', case when v_lock then 'BLOQUE' else 'AUTH_ADMIN' end);
+    insert into public.anti_abus (cle) values ('admin_compte:' || a.id);
+    return jsonb_build_object('ok', false, 'error', 'AUTH_ADMIN');
   end if;
   update public.admins set essais = 0, bloque_jusqua = null, session_hash = public._hash_token(v_token),
          password_hash = case when a.password_hash like '$2%' then a.password_hash else public._hash_pin(p_password) end
@@ -883,14 +920,19 @@ begin
   if public._pin_trop_simple(p_pin) then raise exception 'PIN_TROP_SIMPLE'; end if;
   if v_lot = '' or length(v_lot) > 20 then raise exception 'LOT_INVALIDE'; end if;
   if not exists (select 1 from public.cites where id = p_cite) then raise exception 'CITE_INTROUVABLE'; end if;
-  if exists (select 1 from public.admins where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
-  if exists (select 1 from public.clients where telephone = v_tel and not is_temporary) then raise exception 'DEJA_INSCRIT'; end if;
-  -- Anti-robot : 10 comptes par IP et par heure, 300 par heure au total.
+  -- Anti-robot : 10 tentatives par IP et par heure (y compris sur un numéro déjà
+  -- inscrit : on ne peut pas tester en masse qui a un compte), 300 comptes par
+  -- heure au total.
   if public._limite_ip('inscription', 10, interval '1 hour')
      or (select count(*) from public.clients where created_at > now() - interval '1 hour') >= 300 then
     raise exception 'TROP_DE_TENTATIVES';
   end if;
   perform public._noter_ip('inscription');
+  -- Réponse (pas exception) : une exception annulerait aussi le comptage ci-dessus.
+  if exists (select 1 from public.admins where telephone = v_tel)
+     or exists (select 1 from public.clients where telephone = v_tel and not is_temporary) then
+    return jsonb_build_object('error', 'DEJA_INSCRIT');
+  end if;
 
   if p_lat is null or p_long is null or p_lat not between -90 and 90 or p_long not between -180 and 180 then
     p_lat := null; p_long := null;
@@ -939,14 +981,17 @@ begin
   if p_source is not null and not exists (select 1 from public.sources where id = p_source and cite_id = p_cite) then
     raise exception 'SOURCE_INTROUVABLE';
   end if;
-  if exists (select 1 from public.admins where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
-  if exists (select 1 from public.tricycles where telephone = v_tel) then raise exception 'DEJA_INSCRIT'; end if;
-  -- Anti-robot : 5 chauffeurs par IP et par heure, 50 par heure au total.
+  -- Anti-robot : 5 tentatives par IP et par heure (numéros déjà inscrits compris),
+  -- 50 chauffeurs par heure au total.
   if public._limite_ip('inscription_chauffeur', 5, interval '1 hour')
      or (select count(*) from public.tricycles where created_at > now() - interval '1 hour') >= 50 then
     raise exception 'TROP_DE_TENTATIVES';
   end if;
   perform public._noter_ip('inscription_chauffeur');
+  if exists (select 1 from public.admins where telephone = v_tel)
+     or exists (select 1 from public.tricycles where telephone = v_tel) then
+    return jsonb_build_object('error', 'DEJA_INSCRIT');
+  end if;
 
   insert into public.tricycles (id, nom, telephone, cite_id, source_id, prix_1000, statut, pin_hash, session_hash,
                                 solde_points, essai_fin, valide)
@@ -1288,10 +1333,25 @@ create view public.v_suivi as
         and p.maj > now() - interval '5 minutes';
 revoke all on public.v_suivi from public, anon, authenticated;
 
+-- Lien public /suivi/<id> (sans compte) : la position GPS du domicile n'en sort
+-- pas (lat/long à NULL), et le lien ne répond plus 24 h après la fin de la
+-- commande (lot et téléphone du chauffeur ne restent pas lisibles indéfiniment).
+-- Le client connecté a sa position par client_commande_active.
 create or replace function public.suivi_commande(p_id uuid)
 returns setof public.v_suivi
 language sql stable security definer set search_path = public as $$
-  select * from public.v_suivi where id = p_id
+  select v.id, v.status, v.position_file, v.prix, v.lot_numero,
+         null::double precision, null::double precision,
+         v.created_at, v.programmee_pour, v.arriving_at,
+         v.scheduled_for, v.annulable_jusqua, v.source,
+         v.tricycle_id, v.chauffeur_nom, v.chauffeur_tel, v.etat, v.chauffeur_status,
+         v.cite_nom, v.source_nom,
+         v.tricycle_lat, v.tricycle_long, v.tricycle_position_maj
+  from public.v_suivi v
+  join public.commandes c on c.id = v.id
+  where v.id = p_id
+    and (c.status in ('QUEUED', 'ASSIGNED', 'PROGRAMMED', 'EN_COURS', 'ARRIVING')
+         or coalesce(c.livree_at, c.created_at) > now() - interval '1 day')
 $$;
 
 -- Commande active du client connecté (pour son tableau de bord, sans lien secret).
@@ -1804,21 +1864,51 @@ end $$;
 -- ─── RPC : vérification de session (middleware Next.js) ─────────────────────
 -- Appelée côté serveur avant de servir un espace privé : le jeton est-il
 -- toujours celui de la dernière connexion pour ce rôle ? Ne renvoie qu'un booléen.
+-- Session utilisée = prolongée de 60 jours (au plus une écriture par jour) :
+-- seule une session abandonnée expire.
 create or replace function public.session_valide(p_role text, p_tel text, p_token text)
-returns boolean language plpgsql stable security definer set search_path = public as $$
+returns boolean language plpgsql volatile security definer set search_path = public as $$
+declare
+  v_tel  text := public.normalize_phone(p_tel);
+  v_hash text := public._hash_token(p_token);
+  v_jour timestamptz := now() + interval '59 days';
+  v_fin  timestamptz := now() + interval '60 days';
+begin
+  if p_token is null or length(p_token) < 16 then return false; end if;
+  -- On n'écrit que si la prolongation est due : chaque écriture sur clients /
+  -- tricycles déclenche les pings temps réel (notify_change).
+  if p_role = 'admin' then
+    if not exists (select 1 from public.admins where email = lower(btrim(p_tel)) and session_hash = v_hash and session_expire > now()) then return false; end if;
+    update public.admins set session_expire = v_fin
+     where email = lower(btrim(p_tel)) and session_hash = v_hash and session_expire < v_jour;
+  elsif p_role = 'chauffeur' then
+    if not exists (select 1 from public.tricycles where telephone = v_tel and session_hash = v_hash and session_expire > now()) then return false; end if;
+    update public.tricycles set session_expire = v_fin where telephone = v_tel and session_hash = v_hash and session_expire < v_jour;
+  elsif p_role = 'client' then
+    if not exists (select 1 from public.clients where telephone = v_tel and session_hash = v_hash and session_expire > now()) then return false; end if;
+    update public.clients set session_expire = v_fin where telephone = v_tel and session_hash = v_hash and session_expire < v_jour;
+  else
+    return false;
+  end if;
+  return true;
+end $$;
+
+-- Déconnexion : le jeton est effacé en base, il ne sert plus à rien même s'il a
+-- été copié. Sans effet si le jeton n'est pas le bon.
+create or replace function public.session_fermer(p_role text, p_tel text, p_token text)
+returns void language plpgsql security definer set search_path = public as $$
 declare
   v_tel  text := public.normalize_phone(p_tel);
   v_hash text := public._hash_token(p_token);
 begin
-  if p_token is null or length(p_token) < 16 then return false; end if;
+  if p_token is null or length(p_token) < 16 then return; end if;
   if p_role = 'admin' then
-    return exists (select 1 from public.admins where email = lower(btrim(p_tel)) and session_hash = v_hash);
+    update public.admins set session_hash = null where email = lower(btrim(p_tel)) and session_hash = v_hash;
   elsif p_role = 'chauffeur' then
-    return exists (select 1 from public.tricycles where telephone = v_tel and session_hash = v_hash);
+    update public.tricycles set session_hash = null where telephone = v_tel and session_hash = v_hash;
   elsif p_role = 'client' then
-    return exists (select 1 from public.clients where telephone = v_tel and session_hash = v_hash);
+    update public.clients set session_hash = null where telephone = v_tel and session_hash = v_hash;
   end if;
-  return false;
 end $$;
 
 -- ─── RPC : statistiques annuelles (admin) ──────────────────────────────────
@@ -1975,3 +2065,4 @@ revoke execute on function public._ip()                              from public
 revoke execute on function public._limite_ip(text, int, interval)   from public, anon, authenticated;
 revoke execute on function public._noter_ip(text)                    from public, anon, authenticated;
 revoke execute on function public._pin_trop_simple(text)             from public, anon, authenticated;
+revoke execute on function public._trg_session_expire()          from public, anon, authenticated;

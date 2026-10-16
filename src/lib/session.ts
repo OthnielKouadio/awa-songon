@@ -22,12 +22,19 @@ export function readSession(): Creds | null {
   return null;
 }
 
-/** Déconnexion : localStorage + cookie serveur (httpOnly, donc effacé par l'API). */
+/** Déconnexion : localStorage + cookie serveur (httpOnly, donc effacé par l'API),
+ *  et jeton invalidé en base (l'API le reçoit ici, au cas où le cookie manque). */
 export function clearSession() {
+  const creds = readSession();
   try {
     localStorage.removeItem(KEY);
   } catch {}
-  void fetch("/api/session", { method: "DELETE", keepalive: true }).catch(() => {});
+  void fetch("/api/session", {
+    method: "DELETE",
+    keepalive: true,
+    headers: { "Content-Type": "application/json" },
+    body: creds ? JSON.stringify(creds) : undefined,
+  }).catch(() => {});
 }
 
 /**

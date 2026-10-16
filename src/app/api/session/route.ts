@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
-import { checkSession, homeFor, parseCreds, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/private-routes";
+import { NextResponse, type NextRequest } from "next/server";
+import { checkSession, closeSession, homeFor, parseCreds, readSessionCookie, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/private-routes";
+import type { Creds } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,16 @@ export async function POST(req: Request) {
   return res;
 }
 
-export async function DELETE() {
+/** Déconnexion : jeton effacé en base (celui du cookie, et celui envoyé par le
+ *  navigateur s'il diffère — client sans cookie), puis cookie supprimé. */
+export async function DELETE(req: NextRequest) {
+  let body: unknown = null;
+  try {
+    body = await req.json();
+  } catch {}
+  const parJeton = new Map<string, Creds>();
+  for (const c of [readSessionCookie(req.cookies.get(SESSION_COOKIE)?.value), parseCreds(body)]) if (c) parJeton.set(c.token, c);
+  await Promise.all([...parJeton.values()].map(closeSession));
   const res = NextResponse.json({ ok: true });
   res.cookies.set(SESSION_COOKIE, "", { httpOnly: true, path: "/", maxAge: 0 });
   return res;
