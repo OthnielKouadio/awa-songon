@@ -1,10 +1,8 @@
 "use client";
 
-import { AnimatePresence, animate, motion, type HTMLMotionProps } from "framer-motion";
+import { AnimatePresence, motion, type HTMLMotionProps } from "framer-motion";
 import Link from "next/link";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { COMMANDE_LABEL } from "@/lib/format";
-import type { CommandeSource, CommandeStatus, CompteStatut } from "@/lib/types";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Icon } from "./icons";
 
 // ─── Boutons ───────────────────────────────────────────────────────────────
@@ -57,13 +55,7 @@ type LinkBtnProps = Omit<HTMLMotionProps<"a">, "children"> & {
 /** Même look que Btn, mais un vrai lien (tel:, https://…). */
 export function LinkBtn({ variant = "white", size = "md", className = "", children, ...props }: LinkBtnProps) {
   return (
-    <motion.a
-      whileHover={{ y: -1 }}
-      whileTap={PRESS}
-      transition={SPRING}
-      className={btnClass(variant, size, className)}
-      {...props}
-    >
+    <motion.a whileHover={{ y: -1 }} whileTap={PRESS} transition={SPRING} className={btnClass(variant, size, className)} {...props}>
       {children}
     </motion.a>
   );
@@ -76,165 +68,23 @@ const BADGE = {
   azur: "bg-azur text-white border-azur",
   ink: "bg-ink text-white border-ink",
   gray: "bg-steel/50 text-ink/70 border-steel",
+  green: "bg-reprise/10 text-reprise border-reprise",
+  orange: "bg-pause/10 text-pause border-pause",
   danger: "bg-danger/10 text-danger border-danger",
 } as const;
+export type BadgeTone = keyof typeof BADGE;
 
-export function Badge({
-  tone = "sky",
-  children,
-  className = "",
-}: {
-  tone?: keyof typeof BADGE;
-  children: ReactNode;
-  className?: string;
-}) {
+export function Badge({ tone = "sky", children }: { tone?: BadgeTone; children: ReactNode }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full border-[1.5px] px-3 py-1 text-xs font-bold uppercase tracking-wide ${BADGE[tone]} ${className}`}
-    >
+    <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border-[1.5px] px-2.5 py-0.5 text-xs font-bold ${BADGE[tone]}`}>
       {children}
     </span>
   );
 }
 
-const STATUT_TONE: Record<CompteStatut, keyof typeof BADGE> = { PAYE: "azur", IMPAYE: "gray", BLOQUE: "danger" };
-const STATUT_TEXT: Record<CompteStatut, string> = { PAYE: "Payé", IMPAYE: "Impayé", BLOQUE: "Bloqué" };
+// ─── Formulaires ───────────────────────────────────────────────────────────
 
-/** Badge de statut de compte (géré uniquement par l'admin). */
-export function StatutBadge({ statut }: { statut: CompteStatut }) {
-  return (
-    <Badge tone={STATUT_TONE[statut]}>
-      {statut === "BLOQUE" && <Icon name="lock" size={12} />}
-      {STATUT_TEXT[statut]}
-    </Badge>
-  );
-}
-
-const COMMANDE_TONE: Record<CommandeStatus, keyof typeof BADGE> = {
-  QUEUED: "gray",
-  ASSIGNED: "sky",
-  PROGRAMMED: "gray",
-  EN_COURS: "azur",
-  ARRIVING: "azur",
-  LIVREE: "ink",
-  ANNULEE: "danger",
-};
-
-/** Badge du statut d'une commande (admin, file chauffeur). */
-export function CommandeBadge({ status }: { status: CommandeStatus }) {
-  return <Badge tone={COMMANDE_TONE[status]}>{COMMANDE_LABEL[status]}</Badge>;
-}
-
-/** Origine d'une commande : APPLICATION (plein, point vert) ou MANUEL (contour, point orange). */
-export function SourceBadge({ source }: { source: CommandeSource }) {
-  const app = source === "app";
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider ${
-        app ? "border border-ink bg-ink text-white" : "border border-ink/25 bg-white text-ink/70"
-      }`}
-    >
-      <span className={`h-1.5 w-1.5 rounded-full ${app ? "bg-reprise" : "bg-pause"}`} aria-hidden />
-      {app ? "Application" : "Manuel"}
-    </span>
-  );
-}
-
-/** Filtre segmenté compact (ex. Tous | Application | Manuel). */
-export function SegmentedFilter<T extends string>({
-  value,
-  onChange,
-  options,
-  ariaLabel,
-}: {
-  value: T;
-  onChange: (v: T) => void;
-  options: { id: T; label: string; count?: number }[];
-  ariaLabel: string;
-}) {
-  return (
-    <div role="radiogroup" aria-label={ariaLabel} className="inline-flex rounded-xl border-[1.5px] border-ink/20 bg-white p-0.5">
-      {options.map((o) => {
-        const on = o.id === value;
-        return (
-          <button
-            key={o.id}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            onClick={() => onChange(o.id)}
-            className={`rounded-[10px] px-3 py-1.5 text-sm font-semibold transition-colors ${on ? "bg-ink text-white" : "text-ink/60 hover:text-ink"}`}
-          >
-            {o.label}
-            {o.count != null && <span className={`ml-1.5 tabular-nums ${on ? "text-white/70" : "text-ink/40"}`}>{o.count}</span>}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-/** Cité fixée à l'inscription : badge grisé, cadenas, non cliquable. */
-export function CiteBadge({ children }: { children: ReactNode }) {
-  return (
-    <span
-      aria-readonly="true"
-      title="Fixée à l'inscription, non modifiable"
-      className="inline-flex cursor-default select-none items-center gap-1.5 rounded-full border-[1.5px] border-steel bg-steel/40 px-3 py-1 text-sm font-semibold text-ink/65"
-    >
-      <Icon name="lock" size={13} />
-      {children}
-    </span>
-  );
-}
-
-/** Pastille qui pulse doucement (état "en route", "live"…). */
-export function PulseDot({ color = "#0096FF", pulse = true }: { color?: string; pulse?: boolean }) {
-  return (
-    <span className="relative inline-flex h-2.5 w-2.5">
-      {pulse && (
-        <motion.span
-          className="absolute inset-0 rounded-full"
-          style={{ background: color }}
-          animate={{ scale: [1, 2.4], opacity: [0.6, 0] }}
-          transition={{ repeat: Infinity, duration: 1.6, ease: "easeOut" }}
-        />
-      )}
-      <span className="relative h-2.5 w-2.5 rounded-full" style={{ background: color }} />
-    </span>
-  );
-}
-
-// ─── Compteur qui tourne ───────────────────────────────────────────────────
-
-export function Counter({
-  value,
-  duration = 0.8,
-  format,
-}: {
-  value: number;
-  duration?: number;
-  format?: (n: number) => string;
-}) {
-  const [shown, setShown] = useState(0);
-  const from = useRef(0);
-
-  useEffect(() => {
-    const controls = animate(from.current, value, {
-      duration,
-      ease: "easeOut",
-      onUpdate: (v) => setShown(Math.round(v)),
-    });
-    from.current = value;
-    return () => controls.stop();
-  }, [value, duration]);
-
-  return <span className="tabular-nums">{format ? format(shown) : shown}</span>;
-}
-
-// ─── Champs ────────────────────────────────────────────────────────────────
-
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
     <label className="block">
       <span className="label">{label}</span>
@@ -244,19 +94,113 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
   );
 }
 
+export function PhoneInput({ value, onChange, required = true }: { value: string; onChange: (v: string) => void; required?: boolean }) {
+  return (
+    <input
+      className="field"
+      type="tel"
+      inputMode="numeric"
+      maxLength={10}
+      autoComplete="tel"
+      placeholder="0700000000"
+      value={value}
+      onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 10))}
+      required={required}
+    />
+  );
+}
+
+/** Saisie du code maison à 4 chiffres : grands chiffres espacés. */
+export function CodeInput({
+  value,
+  onChange,
+  label = "Code maison à 4 chiffres",
+  autoFocus,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  label?: string;
+  autoFocus?: boolean;
+}) {
+  return (
+    <input
+      className="field text-center !text-3xl font-bold tracking-[0.6em] placeholder:tracking-[0.6em]"
+      type="password"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      maxLength={4}
+      autoComplete="off"
+      placeholder="••••"
+      value={value}
+      autoFocus={autoFocus}
+      onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 4))}
+      aria-label={label}
+    />
+  );
+}
+
+/** Choix « Qui es-tu ? » : 4 gros boutons. */
+export const ROLES = [
+  { id: "PAPA", label: "Papa" },
+  { id: "MAMAN", label: "Maman" },
+  { id: "ENFANT", label: "Enfant" },
+  { id: "AUTRE", label: "Autre" },
+] as const;
+export type Role = (typeof ROLES)[number]["id"];
+export const roleLabel = (r: string) => ROLES.find((x) => x.id === r)?.label ?? r;
+
+export function RolePicker({ value, onChange }: { value: Role | null; onChange: (r: Role) => void }) {
+  return (
+    <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Qui es-tu ?">
+      {ROLES.map((r) => (
+        <button
+          key={r.id}
+          type="button"
+          role="radio"
+          aria-checked={value === r.id}
+          onClick={() => onChange(r.id)}
+          className={`rounded-2xl border-brut border-ink px-4 py-3 text-lg font-bold transition-colors ${
+            value === r.id ? "bg-ink text-white" : "bg-white hover:bg-sky"
+          }`}
+        >
+          {r.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** 5 étoiles cliquables (ou en lecture seule). */
+export function Stars({ value, onChange, size = 40 }: { value: number; onChange?: (n: number) => void; size?: number }) {
+  return (
+    <div className="flex items-center gap-1" role={onChange ? "radiogroup" : "img"} aria-label={`${value} sur 5`}>
+      {[1, 2, 3, 4, 5].map((n) => {
+        const star = (
+          <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 2.8l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.2l-5.7 3.1 1.2-6.4-4.7-4.4 6.4-.8z"
+              fill={n <= value ? "#0096FF" : "#fff"}
+              stroke="#0A1931"
+              strokeWidth="1.6"
+              strokeLinejoin="round"
+            />
+          </svg>
+        );
+        return onChange ? (
+          <button key={n} type="button" role="radio" aria-checked={n === value} aria-label={`${n} étoile${n > 1 ? "s" : ""}`} onClick={() => onChange(n)} className="transition-transform active:scale-90">
+            {star}
+          </button>
+        ) : (
+          <span key={n}>{star}</span>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Modal (feuille qui monte sur mobile) ──────────────────────────────────
 
-export function Modal({
-  open,
-  onClose,
-  children,
-  wide = false,
-}: {
-  open: boolean;
-  onClose: () => void;
-  children: ReactNode;
-  wide?: boolean;
-}) {
+export function Modal({ open, onClose, children, wide = false }: { open: boolean; onClose: () => void; children: ReactNode; wide?: boolean }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -272,12 +216,7 @@ export function Modal({
   return (
     <AnimatePresence>
       {open && (
-        <motion.div
-          className="fixed inset-0 z-[1000] flex items-end justify-center sm:items-center"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
+        <motion.div className="fixed inset-0 z-[1000] flex items-end justify-center sm:items-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={onClose} />
           <motion.div
             role="dialog"
@@ -298,16 +237,56 @@ export function Modal({
   );
 }
 
+export function ModalTitle({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  return (
+    <div className="mb-5 flex items-center justify-between gap-3">
+      <h2 className="title-md">{children}</h2>
+      <CloseButton onClick={onClose} />
+    </div>
+  );
+}
+
 export function CloseButton({ onClick }: { onClick: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      aria-label="Fermer"
-      className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border-brut border-ink bg-white transition-colors hover:bg-sky"
-    >
+    <button onClick={onClick} aria-label="Fermer" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border-brut border-ink bg-white transition-colors hover:bg-sky">
       <Icon name="close" size={18} />
     </button>
   );
+}
+
+type ConfirmOpts = { title?: string; confirmLabel?: string; danger?: boolean };
+type ConfirmState = ConfirmOpts & { message: ReactNode; resolve: (v: boolean) => void };
+
+/** Remplace window.confirm() : `if (await confirm("Supprimer ?")) …`. Rendre `dialog` une fois dans la page. */
+export function useConfirm() {
+  const [state, setState] = useState<ConfirmState | null>(null);
+  const confirm = useCallback(
+    (message: ReactNode, opts: ConfirmOpts = {}) => new Promise<boolean>((resolve) => setState({ ...opts, message, resolve })),
+    []
+  );
+  const close = (v: boolean) => {
+    state?.resolve(v);
+    setState(null);
+  };
+  const dialog = (
+    <Modal open={!!state} onClose={() => close(false)}>
+      {state && (
+        <>
+          <ModalTitle onClose={() => close(false)}>{state.title ?? "Confirmer"}</ModalTitle>
+          <div className="text-lg leading-relaxed">{state.message}</div>
+          <div className="mt-6 flex gap-3">
+            <Btn variant="white" className="flex-1" onClick={() => close(false)}>
+              Annuler
+            </Btn>
+            <Btn variant={state.danger ? "danger" : "ink"} className="flex-1" onClick={() => close(true)}>
+              {state.confirmLabel ?? "Confirmer"}
+            </Btn>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+  return { confirm, dialog };
 }
 
 // ─── Divers ────────────────────────────────────────────────────────────────
@@ -315,11 +294,7 @@ export function CloseButton({ onClick }: { onClick: () => void }) {
 export function Spinner({ label = "Chargement" }: { label?: string }) {
   return (
     <div className="flex items-center justify-center gap-3 py-10 font-semibold text-ink/70" role="status">
-      <motion.span
-        className="text-azur"
-        animate={{ y: [0, -8, 0] }}
-        transition={{ repeat: Infinity, duration: 0.9, ease: "easeInOut" }}
-      >
+      <motion.span className="text-azur" animate={{ y: [0, -8, 0] }} transition={{ repeat: Infinity, duration: 0.9, ease: "easeInOut" }}>
         <Icon name="drop" size={26} fill />
       </motion.span>
       {label}…
@@ -329,149 +304,51 @@ export function Spinner({ label = "Chargement" }: { label?: string }) {
 
 export function ErrorBox({ children }: { children: ReactNode }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      role="alert"
-      className="rounded-2xl border-brut border-danger bg-white px-4 py-3 font-semibold text-danger"
-    >
+    <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} role="alert" className="rounded-2xl border-brut border-danger bg-white px-4 py-3 font-semibold text-danger">
       {children}
     </motion.div>
   );
 }
 
-/** Numéro d'étape : cercle bleu, chiffre blanc. */
-export function StepNumber({ n }: { n: number }) {
+export function SuccessBox({ children }: { children: ReactNode }) {
   return (
-    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-azur font-display text-lg font-bold text-white">
-      {n}
-    </span>
+    <div role="status" className="rounded-2xl border-brut border-reprise bg-white px-4 py-3 font-semibold text-reprise">
+      {children}
+    </div>
   );
 }
 
-/** compact : le nom disparaît sous 380 px de large (header chargé, iPhone SE). */
-export function Logo({ href = "/", compact = false }: { href?: string; compact?: boolean }) {
+export function Logo({ href = "/" }: { href?: string }) {
   return (
     <Link href={href} aria-label="Distribution Eau" className="flex shrink-0 items-center gap-2.5">
       <span className="grid h-11 w-11 place-items-center rounded-xl border-brut border-ink bg-sky text-azur shadow-hard-sm">
         <Icon name="drop" size={24} fill />
       </span>
-      <span className={`font-display text-xl font-bold tracking-tight ${compact ? "hidden min-[380px]:inline" : ""}`}>
-        Distribution<span className="text-ink/40"> Eau</span>
+      <span className="font-display text-xl font-bold tracking-tight">
+        Distribution<span className="ml-1.5 text-ink/40">Eau</span>
       </span>
     </Link>
   );
 }
 
-/** Interrupteur à bascule (bleu = actif). */
-export function Toggle({
-  on,
-  onToggle,
-  label,
-  hint,
-}: {
-  on: boolean;
-  onToggle: () => void;
-  label: ReactNode;
-  hint?: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      onClick={onToggle}
-      className="flex w-full items-center gap-3 rounded-2xl border-2 border-dashed border-ink/40 px-4 py-3 text-left transition-colors hover:border-azur hover:bg-sky/50"
-    >
-      <span className={`relative h-7 w-12 shrink-0 rounded-full border-2 border-ink transition-colors duration-200 ${on ? "bg-azur" : "bg-white"}`}>
-        <motion.span
-          className={`absolute top-0.5 h-5 w-5 rounded-full ${on ? "bg-white" : "bg-ink"}`}
-          animate={{ left: on ? 22 : 2 }}
-          transition={{ type: "spring", stiffness: 420, damping: 32 }}
-        />
-      </span>
-      <span className="text-sm font-semibold sm:text-base">
-        {label}
-        {hint && <span className="block text-xs font-medium text-ink/55">{hint}</span>}
-      </span>
-    </button>
-  );
-}
-
-/** Téléphone ivoirien : chiffres uniquement, 10 au maximum (lettres, espaces, +
- *  et tirets sont ignorés à la frappe comme au collage). */
-export function PhoneInput({
-  value,
-  onChange,
-  autoComplete = "tel",
-  invalid,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  autoComplete?: string;
-  invalid?: boolean;
-}) {
-  return (
-    <input
-      className="field"
-      type="tel"
-      inputMode="numeric"
-      pattern="[0-9]{10}"
-      maxLength={10}
-      autoComplete={autoComplete}
-      placeholder="0700000000"
-      value={value}
-      onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 10))}
-      aria-invalid={invalid || undefined}
-      required
-    />
-  );
-}
-
-/** Saisie de code à 4 chiffres (PIN), grands chiffres espacés. */
-export function PinInput({
-  value,
-  onChange,
-  autoComplete,
-  label = "Code PIN à 4 chiffres",
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  autoComplete: string;
-  label?: string;
-}) {
-  return (
-    <input
-      className="field text-center !text-3xl font-bold tracking-[0.6em] placeholder:tracking-[0.6em]"
-      type="password"
-      inputMode="numeric"
-      pattern="[0-9]*"
-      maxLength={4}
-      autoComplete={autoComplete}
-      placeholder="••••"
-      value={value}
-      onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 4))}
-      aria-label={label}
-    />
-  );
-}
-
 // ─── Admin : tableau simple ─────────────────────────────────────────────────
 
-export function Table({ children }: { children: ReactNode }) {
+export function Table({ children, minWidth = 640 }: { children: ReactNode; minWidth?: number }) {
   return (
-    <div className="overflow-x-auto rounded-2xl border-brut border-ink">
-      <table className="w-full min-w-[640px] border-collapse text-left text-sm">{children}</table>
+    <div className="overflow-x-auto rounded-2xl border-brut border-ink bg-white">
+      <table className="w-full border-collapse text-left text-sm" style={{ minWidth }}>
+        {children}
+      </table>
     </div>
   );
 }
 
-export function Th({ children }: { children: ReactNode }) {
-  return <th className="border-b-2 border-ink bg-mist px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink/60">{children}</th>;
+export function Th({ children, className = "" }: { children?: ReactNode; className?: string }) {
+  return <th className={`border-b-2 border-ink bg-mist px-3 py-3 text-xs font-bold uppercase tracking-wide text-ink/60 ${className}`}>{children}</th>;
 }
 
-export function Td({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <td className={`border-b border-ink/10 px-4 py-3 align-middle ${className}`}>{children}</td>;
+export function Td({ children, className = "" }: { children?: ReactNode; className?: string }) {
+  return <td className={`border-b border-ink/10 px-3 py-3 align-middle ${className}`}>{children}</td>;
 }
 
 /** Bouton compact pour les actions de tableau (admin). */
@@ -496,7 +373,7 @@ export function TableBtn({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex items-center gap-1 rounded-lg border-[1.5px] px-2.5 py-1 text-xs font-bold transition-colors disabled:opacity-40 ${cls}`}
+      className={`inline-flex items-center gap-1 rounded-lg border-[1.5px] px-2.5 py-1.5 text-xs font-bold transition-colors disabled:opacity-40 ${cls}`}
     >
       {children}
     </button>

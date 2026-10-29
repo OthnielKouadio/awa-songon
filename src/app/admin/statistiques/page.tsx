@@ -1,303 +1,326 @@
 "use client";
 
-import {
-  ArrowLeft,
-  CircleCheck,
-  Clock,
-  Download,
-  FileSpreadsheet,
-  Package,
-  PenLine,
-  Receipt,
-  RotateCcw,
-  ShoppingCart,
-  Smartphone,
-  TrendingDown,
-  TrendingUp,
-  UserCheck,
-  UserPlus,
-  Users,
-  Wallet,
-} from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { CaParMois, CommandesParMois, NouveauxRecurrents, PerformanceChauffeurs, RepartitionZones, TauxParMois } from "@/components/stats/Charts";
-import RecapTable from "@/components/stats/RecapTable";
-import { ChartSkeleton, FilterSelect, KpiCard, KpiSkeleton } from "@/components/stats/ui";
-import { usePrivateBase } from "@/components/PrivateBase";
-import { api } from "@/lib/data-provider";
-import { AppError, errorMessage } from "@/lib/errors";
-import { clearSession, readSession } from "@/lib/session";
-import {
-  ANNEE_COURANTE,
-  ANNEES,
-  calculerKpis,
-  exporterCsv,
-  exporterExcel,
-  fmtDuree,
-  fmtFcfa,
-  fmtNombre,
-  fmtPct,
-  MOIS,
-  parChauffeur,
-  parZone,
-  recapMensuel,
-  seriesMensuelles,
-} from "@/lib/stats";
-import type { Creds, YearlyStats } from "@/lib/types";
+import { useMemo, useState } from "react";
+import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Icon } from "@/components/icons";
+import { Btn, ErrorBox, Spinner } from "@/components/ui";
+import { cellule, telechargerCsv } from "@/lib/csv";
+import { fcfa } from "@/lib/format";
+import { useRpc } from "@/lib/useRpc";
+import { Chip } from "../shared";
 
+type Mois = {
+  mois: number;
+  total: number;
+  app: number;
+  manual: number;
+  livrees: number;
+  annulees: number;
+  echecs: number;
+  ca: number;
+  ca_brut: number;
+  bonus: number;
+  eau: number;
+  clients_uniques: number;
+  nouveaux: number;
+  recurrents: number;
+  clients_plus_3: number;
+  temps_moyen_min: number | null;
+  remboursements_montant: number;
+  remboursements_nb: number;
+  total_annee_precedente: number;
+};
+type Stats = {
+  annee: number;
+  mois: Mois[];
+  synthese: { clients_actifs: number; nouveaux: number; clients_plus_3: number; temps_moyen_min: number | null; recharges: number };
+  livreurs: { id: string; nom: string; mois: number; livraisons: number }[];
+  cites: { cite_id: string; cite: string; mois: number; total: number }[];
+  options: { cites: { id: string; nom: string }[]; livreurs: { id: string; nom: string; cite_id: string }[] };
+};
+
+const NOMS_MOIS = ["Janv.", "Févr.", "Mars", "Avr.", "Mai", "Juin", "Juil.", "Août", "Sept.", "Oct.", "Nov.", "Déc."];
+const COLONNES: [keyof Mois, string][] = [
+  ["total", "Commandes"],
+  ["app", "Application"],
+  ["manual", "Saisie directe"],
+  ["livrees", "Livrées"],
+  ["annulees", "Annulées"],
+  ["echecs", "Échecs"],
+  ["eau", "Eau livrée (FCFA)"],
+  ["ca", "CA appli net (FCFA)"],
+  ["bonus", "Livraisons offertes"],
+  ["clients_uniques", "Clients"],
+  ["nouveaux", "Nouveaux"],
+  ["remboursements_montant", "Recrédits (pts)"],
+];
+
+/** Statistiques annuelles (V2) : une seule requête (admin_stats_annuelles). */
 export default function StatistiquesPage() {
-  const router = useRouter();
-  const [creds, setCreds] = useState<Creds | null>(null);
+  const anneeCourante = new Date().getFullYear();
+  const [annee, setAnnee] = useState(anneeCourante);
+  const [mois, setMois] = useState<number | null>(null);
+  const [cite, setCite] = useState<string | null>(null);
+  const [livreur, setLivreur] = useState<string | null>(null);
+  const args = { p_annee: annee, p_cite: cite, p_livreur: livreur };
+  const { data, err, chargement } = useRpc<Stats>("admin_stats_annuelles", args, JSON.stringify(args));
 
-  useEffect(() => {
-    const s = readSession();
-    if (!s || s.role !== "admin") router.replace("/login");
-    else setCreds(s);
-  }, [router]);
+  const lignes = useMemo(() => (data ? data.mois.filter((m) => mois === null || m.mois === mois) : []), [data, mois]);
+  const total = useMemo(() => {
+    const t = { mois: 0 } as Mois;
+    for (const [k] of COLONNES) (t[k] as number) = lignes.reduce((s, l) => s + Number(l[k] ?? 0), 0);
+    return t;
+  }, [lignes]);
 
-  if (!creds) return null;
-  return <Statistiques creds={creds} />;
-}
+  if (chargement && !data) return <Spinner />;
+  if (err) return <ErrorBox>{err}</ErrorBox>;
+  if (!data) return null;
 
-function Statistiques({ creds }: { creds: Creds }) {
-  const router = useRouter();
-  const base = usePrivateBase();
-  const [annee, setAnnee] = useState(ANNEE_COURANTE);
-  const [mois, setMois] = useState(0);
-  const [cite, setCite] = useState("");
-  const [chauffeur, setChauffeur] = useState("");
-  const [stats, setStats] = useState<YearlyStats | null>(null);
-  const [chargement, setChargement] = useState(true);
-  const [erreur, setErreur] = useState("");
-  const [exportEnCours, setExportEnCours] = useState(false);
+  const precedente = lignes.reduce((s, l) => s + l.total_annee_precedente, 0);
+  const variation = precedente > 0 ? ((total.total - precedente) / precedente) * 100 : null;
+  const reussite = total.total > 0 ? (total.livrees / total.total) * 100 : null;
+  const parLivreur = Object.values(
+    data.livreurs.filter((l) => mois === null || l.mois === mois).reduce<Record<string, { nom: string; livraisons: number }>>((acc, l) => {
+      acc[l.id] = { nom: l.nom, livraisons: (acc[l.id]?.livraisons ?? 0) + l.livraisons };
+      return acc;
+    }, {})
+  ).sort((a, b) => b.livraisons - a.livraisons);
+  const graph = data.mois.map((m) => ({ ...m, nom: NOMS_MOIS[m.mois - 1] }));
+  const periode = `${mois ? NOMS_MOIS[mois - 1] + " " : ""}${annee}`;
+  const nomFichier = `statistiques-${annee}${mois ? "-" + String(mois).padStart(2, "0") : ""}`;
 
-  const charger = useCallback(async () => {
-    setChargement(true);
-    try {
-      setStats(await api.admin.statsAnnuelles(creds, annee, cite || null, chauffeur || null));
-      setErreur("");
-    } catch (e) {
-      if (e instanceof AppError && e.code === "REFUSE") {
-        clearSession();
-        router.replace("/login");
-        return;
-      }
-      setErreur(errorMessage(e));
-    } finally {
-      setChargement(false);
-    }
-  }, [creds, annee, cite, chauffeur, router]);
+  const exporterCsv = () => {
+    const entete = ["Mois", ...COLONNES.map(([, l]) => l)];
+    const rows = lignes.map((l) => [NOMS_MOIS[l.mois - 1], ...COLONNES.map(([k]) => Number(l[k] ?? 0))]);
+    rows.push(["Total", ...COLONNES.map(([k]) => Number(total[k] ?? 0))]);
+    // Séparateur « ; » : Excel français l'ouvre directement en colonnes.
+    telechargerCsv(`${nomFichier}.csv`, [entete, ...rows].map((r) => r.map(cellule).join(";")).join("\r\n") + "\r\n");
+  };
 
-  useEffect(() => {
-    void charger();
-  }, [charger]);
-
-  const vue = useMemo(() => {
-    if (!stats) return null;
-    const kpis = calculerKpis(stats, mois);
-    const recap = recapMensuel(stats, mois);
-    const mensuel = seriesMensuelles(stats);
-    const chauffeurs = parChauffeur(stats, mois);
-    const zones = parZone(stats, mois, !!cite);
-    return { kpis, recap, mensuel, chauffeurs, zones, anneeVide: stats.mois.every((m) => m.total === 0) };
-  }, [stats, mois, cite]);
-
-  const optionsChauffeurs = useMemo(
-    () => (stats?.options.chauffeurs ?? []).filter((c) => !cite || c.cite_id === cite),
-    [stats, cite]
-  );
-
-  const periode = `${mois ? `${MOIS[mois - 1]} ` : ""}${annee}`;
-  const nomFichier = `statistiques-${annee}${mois ? `-${String(mois).padStart(2, "0")}` : ""}`;
-
-  async function exporter(format: "csv" | "xlsx") {
-    if (!vue) return;
-    setExportEnCours(true);
-    try {
-      if (format === "csv") exporterCsv(vue.recap.lignes, vue.recap.total, nomFichier);
-      else await exporterExcel(vue.recap.lignes, vue.recap.total, vue.kpis, vue.chauffeurs, periode, nomFichier);
-    } catch (e) {
-      setErreur(errorMessage(e));
-    } finally {
-      setExportEnCours(false);
-    }
-  }
-
-  const boutonsExport = (
-    <>
-      <button
-        type="button"
-        onClick={() => exporter("csv")}
-        disabled={!vue || exportEnCours}
-        className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-      >
-        <Download size={15} /> Exporter en CSV
-      </button>
-      <button
-        type="button"
-        onClick={() => exporter("xlsx")}
-        disabled={!vue || exportEnCours}
-        className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-900 px-3 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
-      >
-        <FileSpreadsheet size={15} /> Exporter en Excel
-      </button>
-    </>
-  );
-
-  const k = vue?.kpis;
-  const anneePrec = annee - 1;
+  const exporterExcel = async () => {
+    const { default: writeXlsxFile } = await import("write-excel-file/browser");
+    const entete = (v: string) => ({ value: v, fontWeight: "bold" as const });
+    const c = (v: string | number) => (typeof v === "number" ? { value: v, type: Number } : { value: v, type: String });
+    const recap = [
+      ["Mois", ...COLONNES.map(([, l]) => l)].map(entete),
+      ...lignes.map((l) => [c(NOMS_MOIS[l.mois - 1]), ...COLONNES.map(([k]) => c(Number(l[k] ?? 0)))]),
+      [c("Total"), ...COLONNES.map(([k]) => ({ ...c(Number(total[k] ?? 0)), fontWeight: "bold" as const }))],
+    ];
+    const indicateurs: [string, string | number][] = [
+      ["Période", periode],
+      ["Commandes", total.total],
+      ["Variation vs année précédente (%)", variation === null ? "" : Math.round(variation * 10) / 10],
+      ["Livrées", total.livrees],
+      ["Taux de réussite (%)", reussite === null ? "" : Math.round(reussite * 10) / 10],
+      ["Valeur de l'eau livrée (FCFA)", total.eau],
+      ["CA appli net (FCFA)", total.ca],
+      ["Recharges de l'année (points)", data.synthese.recharges],
+      ["Clients actifs", data.synthese.clients_actifs],
+      ["Nouveaux clients", data.synthese.nouveaux],
+      ["Clients fidèles (> 3 commandes)", data.synthese.clients_plus_3],
+      ["Temps moyen de livraison (min)", data.synthese.temps_moyen_min ?? ""],
+    ];
+    const blob = await writeXlsxFile([
+      { sheet: "Récap mensuel", data: recap, columns: [{ width: 14 }, ...COLONNES.map(() => ({ width: 18 }))] },
+      { sheet: "Indicateurs", data: [[entete("Indicateur"), entete("Valeur")], ...indicateurs.map(([k, v]) => [c(k), c(v)])], columns: [{ width: 36 }, { width: 20 }] },
+      { sheet: "Livreurs", data: [[entete("Livreur"), entete("Livraisons")], ...parLivreur.map((l) => [c(l.nom), c(l.livraisons)])], columns: [{ width: 24 }, { width: 14 }] },
+    ]).toBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${nomFichier}.xlsx`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   return (
-    <main className="mx-auto max-w-7xl px-4 pb-16 sm:px-6">
-      <header className="flex flex-wrap items-end justify-between gap-3 pb-4 pt-6">
-        <div>
-          <Link href={base} className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900">
-            <ArrowLeft size={15} /> Retour au cockpit
-          </Link>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Statistiques</h1>
-          <p className="text-sm text-slate-500">Activité de la plateforme · {periode}</p>
-        </div>
-      </header>
-
-      {/* Filtres globaux */}
-      <div className="sticky top-0 z-20 -mx-4 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
-        <div className="grid grid-cols-2 items-end gap-3 md:grid-cols-4 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto]">
-          <FilterSelect label="Année" value={String(annee)} onChange={(v) => setAnnee(Number(v))} options={ANNEES.map((a) => ({ value: String(a), label: String(a) }))} />
-          <FilterSelect
-            label="Mois"
-            value={String(mois)}
-            onChange={(v) => setMois(Number(v))}
-            options={[{ value: "0", label: "Tous" }, ...MOIS.map((m, i) => ({ value: String(i + 1), label: m }))]}
-          />
-          <FilterSelect
-            label="Zone / Quartier"
-            value={cite}
-            onChange={(v) => {
-              setCite(v);
-              setChauffeur("");
-            }}
-            options={[{ value: "", label: "Toutes" }, ...(stats?.options.cites ?? []).map((c) => ({ value: c.id, label: c.nom }))]}
-          />
-          <FilterSelect
-            label="Chauffeur"
-            value={chauffeur}
-            onChange={setChauffeur}
-            options={[{ value: "", label: "Tous" }, ...optionsChauffeurs.map((c) => ({ value: c.id, label: c.nom }))]}
-          />
-          <div className="col-span-2 flex flex-wrap gap-2 md:col-span-4 lg:col-span-1">{boutonsExport}</div>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <h1 className="title-lg">Statistiques</h1>
+        <div className="flex gap-2">
+          <Btn variant="white" onClick={exporterCsv}>
+            <Icon name="download" size={18} /> CSV
+          </Btn>
+          <Btn variant="white" onClick={() => void exporterExcel()}>
+            <Icon name="download" size={18} /> Excel
+          </Btn>
         </div>
       </div>
 
-      {erreur && <p className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">{erreur}</p>}
-
-      <div className={`mt-6 space-y-8 transition-opacity ${chargement && vue ? "opacity-60" : ""}`} aria-busy={chargement}>
-        {/* Section 1 : indicateurs */}
-        <section aria-label="Indicateurs clés">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {!k ? (
-              Array.from({ length: 12 }, (_, i) => <KpiSkeleton key={i} />)
-            ) : (
-              <>
-                <KpiCard
-                  icon={ShoppingCart}
-                  titre={mois ? "Total commandes du mois" : "Total commandes année"}
-                  valeur={fmtNombre(k.total)}
-                  detail={
-                    <Variation
-                      valeur={k.variation}
-                      reference={
-                        mois
-                          ? `${MOIS[mois - 1].toLowerCase()} ${anneePrec}`
-                          : k.periodeComparee
-                          ? `janvier–${MOIS[k.periodeComparee - 1].toLowerCase()} ${anneePrec}`
-                          : String(anneePrec)
-                      }
-                    />
-                  }
-                />
-                <KpiCard icon={Smartphone} titre="Commandes application" valeur={fmtNombre(k.app)} detail={k.total ? `${fmtPct(k.appPct)} du total` : "Aucune commande"} />
-                <KpiCard icon={PenLine} titre="Commandes manuelles" valeur={fmtNombre(k.manual)} detail={k.total ? `${fmtPct(k.manualPct)} du total` : "Aucune commande"} />
-                <KpiCard icon={Package} titre="Bidons livrés" valeur={fmtNombre(k.bidons)} detail={`Saisies manuelles · ${fmtNombre(k.livrees)} livraisons au total`} />
-
-                <KpiCard
-                  icon={Wallet}
-                  titre="Chiffre d'affaires net"
-                  valeur={fmtFcfa(k.ca)}
-                  detail={`Brut ${fmtFcfa(k.caBrut)} · Remise bonus −${fmtFcfa(k.remiseBonus)} (${fmtNombre(k.bonus)} offertes)`}
-                />
-                <KpiCard
-                  icon={Receipt}
-                  titre="Revenu moyen par livraison"
-                  valeur={k.panierMoyen == null ? "—" : fmtFcfa(k.panierMoyen)}
-                  detail={`Sur ${fmtNombre(k.livrees)} commandes livrées`}
-                />
-                <KpiCard
-                  icon={RotateCcw}
-                  titre="Avoirs / remboursements"
-                  valeur={fmtFcfa(k.remboursements)}
-                  detail={`${fmtNombre(k.remboursementsNb)} cas crédités`}
-                />
-                <KpiCard
-                  icon={UserCheck}
-                  titre="Revenu moyen par client actif"
-                  valeur={k.revenuParClient == null ? "—" : fmtFcfa(k.revenuParClient)}
-                  detail={`${fmtNombre(k.clientsActifs)} clients actifs`}
-                />
-
-                <KpiCard icon={Users} titre="Clients actifs" valeur={fmtNombre(k.clientsActifs)} detail="Au moins une commande sur la période" />
-                <KpiCard icon={UserPlus} titre="Nouveaux clients" valeur={fmtNombre(k.nouveaux)} detail={`${fmtNombre(k.recurrents)} récurrents (plus de 3 commandes)`} />
-                <KpiCard
-                  icon={CircleCheck}
-                  titre="Taux de livraison réussie"
-                  valeur={fmtPct(k.tauxReussite)}
-                  detail={`Annulation ${fmtPct(k.tauxAnnulation)} · Échec ${fmtPct(k.tauxEchec)}`}
-                />
-                <KpiCard icon={Clock} titre="Temps moyen de livraison" valeur={fmtDuree(k.tempsMoyen)} detail="De la commande à la livraison" />
-              </>
-            )}
-          </div>
-        </section>
-
-        {/* Section 2 : graphiques */}
-        <section aria-label="Graphiques" className="grid gap-4 lg:grid-cols-2">
-          {!vue ? (
-            Array.from({ length: 6 }, (_, i) => <ChartSkeleton key={i} />)
-          ) : (
-            <>
-              <CommandesParMois data={vue.mensuel} mois={mois} vide={vue.anneeVide} />
-              <CaParMois data={vue.mensuel} vide={vue.mensuel.every((m) => m.ca === 0)} />
-              <PerformanceChauffeurs data={vue.chauffeurs} vide={vue.chauffeurs.length === 0} />
-              <RepartitionZones data={vue.zones} parLot={!!cite} vide={vue.zones.length === 0} />
-              <TauxParMois data={vue.mensuel} vide={vue.anneeVide} />
-              <NouveauxRecurrents data={vue.mensuel} mois={mois} vide={vue.anneeVide} />
-            </>
-          )}
-        </section>
-
-        {/* Section 3 : récapitulatif */}
-        {vue ? <RecapTable lignes={vue.recap.lignes} total={vue.recap.total} actions={boutonsExport} /> : <ChartSkeleton hauteur={320} />}
-
-        <p className="text-xs text-slate-400">
-          Chiffre d&apos;affaires = revenu de la plateforme sur les commandes livrées : 100 FCFA par commande payée par le client, 50 FCFA par commande
-          payée par le chauffeur (rien pendant les essais gratuits), moins 50 FCFA par livraison offerte (bonus fidélité). Échec : commande encore ouverte après son jour de livraison prévu.
-          Bidons : quantité déclarée lors des saisies manuelles. Temps moyen : livraisons enregistrées depuis la mise en place du suivi.
-        </p>
+      {/* Filtres */}
+      <div className="sticky top-[118px] z-40 space-y-2 rounded-brut border-brut border-ink bg-white/95 p-3 backdrop-blur">
+        <div className="flex flex-wrap gap-1.5">
+          {[anneeCourante - 2, anneeCourante - 1, anneeCourante].map((a) => (
+            <Chip key={a} actif={annee === a} onClick={() => setAnnee(a)}>
+              {a}
+            </Chip>
+          ))}
+          <span className="mx-1 w-px bg-ink/20" />
+          <Chip actif={mois === null} onClick={() => setMois(null)}>
+            Toute l&apos;année
+          </Chip>
+          {NOMS_MOIS.map((n, i) => (
+            <Chip key={n} actif={mois === i + 1} onClick={() => setMois(i + 1)}>
+              {n}
+            </Chip>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <Chip actif={cite === null} onClick={() => { setCite(null); setLivreur(null); }}>
+            Toutes les cités
+          </Chip>
+          {data.options.cites.map((c) => (
+            <Chip key={c.id} actif={cite === c.id} onClick={() => { setCite(c.id); setLivreur(null); }}>
+              {c.nom}
+            </Chip>
+          ))}
+          <span className="mx-1 w-px bg-ink/20" />
+          <Chip actif={livreur === null} onClick={() => setLivreur(null)}>
+            Tous les livreurs
+          </Chip>
+          {data.options.livreurs
+            .filter((l) => !cite || l.cite_id === cite)
+            .map((l) => (
+              <Chip key={l.id} actif={livreur === l.id} onClick={() => setLivreur(l.id)}>
+                {l.nom}
+              </Chip>
+            ))}
+        </div>
       </div>
-    </main>
+
+      {/* Indicateurs */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Kpi k="Commandes" v={String(total.total)} sous={variation === null ? undefined : `${variation >= 0 ? "+" : ""}${variation.toFixed(1)} % vs ${annee - 1}`} />
+        <Kpi k="Livrées" v={String(total.livrees)} sous={reussite === null ? undefined : `${reussite.toFixed(0)} % de réussite`} />
+        <Kpi k="Eau livrée" v={fcfa(total.eau)} />
+        <Kpi k="CA appli net" v={fcfa(total.ca)} sous={total.bonus ? `${total.bonus} livraison(s) offerte(s)` : undefined} />
+        <Kpi k="Application / directe" v={`${total.app} / ${total.manual}`} />
+        <Kpi k="Annulées / échecs" v={`${total.annulees} / ${total.echecs}`} />
+        <Kpi k="Clients actifs" v={String(data.synthese.clients_actifs)} sous={`${data.synthese.nouveaux} nouveaux · ${data.synthese.clients_plus_3} fidèles`} />
+        <Kpi k="Temps moyen" v={data.synthese.temps_moyen_min !== null ? `${data.synthese.temps_moyen_min} min` : "–"} sous="commande → livrée" />
+      </div>
+
+      {/* Graphiques */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Graph titre="Commandes par mois">
+          <BarChart data={graph}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#0A193120" />
+            <XAxis dataKey="nom" fontSize={11} />
+            <YAxis allowDecimals={false} fontSize={11} />
+            <Tooltip />
+            <Legend />
+            <Bar dataKey="app" name="Application" stackId="a" fill="#0096FF" />
+            <Bar dataKey="manual" name="Saisie directe" stackId="a" fill="#F28C28" />
+          </BarChart>
+        </Graph>
+        <Graph titre={`Comparaison ${annee - 1} / ${annee}`}>
+          <LineChart data={graph}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#0A193120" />
+            <XAxis dataKey="nom" fontSize={11} />
+            <YAxis allowDecimals={false} fontSize={11} />
+            <Tooltip />
+            <Legend />
+            <Line dataKey="total_annee_precedente" name={String(annee - 1)} stroke="#C9D5E3" strokeWidth={3} dot={false} />
+            <Line dataKey="total" name={String(annee)} stroke="#0A1931" strokeWidth={3} />
+          </LineChart>
+        </Graph>
+        <Graph titre="Valeur de l'eau livrée (FCFA)">
+          <BarChart data={graph}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#0A193120" />
+            <XAxis dataKey="nom" fontSize={11} />
+            <YAxis fontSize={11} />
+            <Tooltip formatter={(v) => fcfa(Number(v))} />
+            <Bar dataKey="eau" name="Eau livrée" fill="#1FA35B" />
+          </BarChart>
+        </Graph>
+        <Graph titre="Clients">
+          <BarChart data={graph}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#0A193120" />
+            <XAxis dataKey="nom" fontSize={11} />
+            <YAxis allowDecimals={false} fontSize={11} />
+            <Tooltip />
+            <Legend />
+            <Bar dataKey="nouveaux" name="Nouveaux" stackId="c" fill="#0096FF" />
+            <Bar dataKey="recurrents" name="Récurrents" stackId="c" fill="#0A1931" />
+          </BarChart>
+        </Graph>
+      </div>
+
+      {/* Récap mensuel */}
+      <section>
+        <h2 className="title-md mb-3">Récapitulatif {periode}</h2>
+        <div className="overflow-x-auto rounded-2xl border-brut border-ink bg-white">
+          <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+            <thead>
+              <tr>
+                <th className="border-b-2 border-ink bg-mist px-3 py-2 text-xs font-bold uppercase">Mois</th>
+                {COLONNES.map(([, l]) => (
+                  <th key={l} className="border-b-2 border-ink bg-mist px-3 py-2 text-right text-xs font-bold uppercase">
+                    {l}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {lignes.map((l) => (
+                <tr key={l.mois} className="border-b border-ink/10">
+                  <td className="px-3 py-2 font-bold">{NOMS_MOIS[l.mois - 1]}</td>
+                  {COLONNES.map(([k]) => (
+                    <td key={k} className="px-3 py-2 text-right tabular-nums">
+                      {Number(l[k] ?? 0).toLocaleString("fr-FR")}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              <tr className="bg-sky font-bold">
+                <td className="px-3 py-2">Total</td>
+                {COLONNES.map(([k]) => (
+                  <td key={k} className="px-3 py-2 text-right tabular-nums">
+                    {Number(total[k] ?? 0).toLocaleString("fr-FR")}
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {parLivreur.length > 0 && (
+        <section>
+          <h2 className="title-md mb-3">Livraisons par livreur</h2>
+          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {parLivreur.map((l) => (
+              <li key={l.nom} className="flex justify-between rounded-2xl border-brut border-ink bg-white px-4 py-3 font-bold">
+                <span>{l.nom}</span>
+                <span>{l.livraisons}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
   );
 }
 
-function Variation({ valeur, reference }: { valeur: number | null; reference: string }) {
-  if (valeur == null) return <span>Pas de données en {reference}</span>;
-  const hausse = valeur >= 0;
-  const Icone = hausse ? TrendingUp : TrendingDown;
+function Kpi({ k, v, sous }: { k: string; v: string; sous?: string }) {
   return (
-    <span className={`inline-flex items-center gap-1 font-medium ${hausse ? "text-emerald-700" : "text-red-700"}`}>
-      <Icone size={13} aria-hidden />
-      {hausse ? "+" : ""}
-      {fmtPct(valeur)} vs {reference}
-    </span>
+    <div className="rounded-brut border-brut border-ink bg-white p-4 shadow-hard-sm">
+      <p className="text-xs font-bold uppercase tracking-wide text-ink/55">{k}</p>
+      <p className="mt-1 font-display text-2xl font-bold">{v}</p>
+      {sous && <p className="text-xs font-semibold text-ink/55">{sous}</p>}
+    </div>
+  );
+}
+
+function Graph({ titre, children }: { titre: string; children: React.ReactElement }) {
+  return (
+    <div className="rounded-brut border-brut border-ink bg-white p-4">
+      <p className="mb-2 font-bold">{titre}</p>
+      <div style={{ height: 240 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          {children}
+        </ResponsiveContainer>
+      </div>
+    </div>
   );
 }

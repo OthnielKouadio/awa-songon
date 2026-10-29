@@ -6,8 +6,8 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Distribution Eau — Livraison d'eau",
     short_name: "Distribution Eau",
-    description: "Livraison d'eau par tricycle à Songon. Commande, suis, livre.",
-    start_url: "/login",
+    description: "Livraison d'eau dans votre cité. Scannez l'autocollant de votre maison et commandez.",
+    start_url: "/",
     scope: "/",
     display: "standalone",
     orientation: "portrait",

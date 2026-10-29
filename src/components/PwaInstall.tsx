@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { usePwaInstall } from "@/lib/usePwaInstall";
 import { Icon } from "./icons";
 
-const DISMISSED_KEY = "awa:pwa-dismissed";
+const DISMISSED_KEY = "akwaba:pwa-dismissed";
 
 /** Enregistre le service worker (installabilité + cache des fichiers statiques)
  *  et affiche une bannière discrète en haut de l'écran pour installer l'app —

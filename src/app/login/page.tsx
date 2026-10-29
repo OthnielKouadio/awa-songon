@@ -1,59 +1,77 @@
 "use client";
 
-import { motion } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { erreurTelephone } from "@/components/auth/inscription";
-import { Icon } from "@/components/icons";
-import { Badge, Btn, ErrorBox, Field, Logo, PhoneInput, PinInput, Spinner } from "@/components/ui";
-import { api } from "@/lib/data-provider";
-import { errorMessage } from "@/lib/errors";
-import { formatPhone, normalizePhone } from "@/lib/phone";
-import { clearSession, openSession, readSession } from "@/lib/session";
-import { useDepotPhone } from "@/lib/useDepotPhone";
+import { Btn, CodeInput, ErrorBox, Field, Logo, PhoneInput, Spinner } from "@/components/ui";
+import { ApiError, messageErreur, rpc } from "@/lib/api";
+import { enregistrerAppareil, tousLesAppareils } from "@/lib/appareils";
+import { ecrireJetonLivreur, lireJetonLivreur } from "@/lib/livreurSession";
+import { isValidPhone } from "@/lib/phone";
 
-/** Connexion client ET chauffeur, sans choix de rôle : le serveur reconnaît le
- *  numéro (auth_login 'auto') et renvoie vers le bon espace. L'admin ne se
- *  connecte jamais ici (page secrète dédiée). */
+type Reponse =
+  | { ok: true; role: "foyer"; qr: string; code_affichage: string; jeton: string }
+  | { ok: true; role: "livreur"; jeton: string; code_provisoire: boolean };
+
+async function adresseLivreur(jeton: string): Promise<string | null> {
+  const r = await fetch("/api/espace-livreur", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jeton }) }).catch(() => null);
+  if (!r?.ok) return null;
+  return ((await r.json()) as { home: string }).home;
+}
+
+/**
+ * Connexion unique (V2) : numéro + code à 4 chiffres, sans choisir son rôle.
+ *   famille  → numéro inscrit dans le foyer + CODE MAISON → sa maison
+ *   livreur  → numéro + son code → son espace (lien secret)
+ * L'admin ne se connecte jamais ici (page secrète + 2FA).
+ */
 export default function LoginPage() {
   const router = useRouter();
-  const [checking, setChecking] = useState(true);
+  const [verif, setVerif] = useState(true);
   const [tel, setTel] = useState("");
-  const [pin, setPin] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [oubli, setOubli] = useState(false);
-  const depot = useDepotPhone();
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [envoi, setEnvoi] = useState(false);
 
-  // Déjà connecté → direct sur son tableau de bord (jeton revérifié par le serveur).
+  // Déjà connecté sur ce téléphone → directement au bon endroit.
   useEffect(() => {
-    const c = readSession();
-    if (!c) return setChecking(false);
-    openSession(c)
-      .then((home) => router.replace(home))
-      .catch(() => {
-        clearSession();
-        setChecking(false);
-      });
+    void (async () => {
+      const j = lireJetonLivreur();
+      if (j) {
+        const home = await adresseLivreur(j);
+        if (home) return router.replace(home);
+      }
+      const maisons = tousLesAppareils();
+      if (maisons.length === 1) return router.replace(`/m/${maisons[0].qr}`);
+      setVerif(false);
+    })();
   }, [router]);
 
-  async function submit(e: React.FormEvent) {
+  const soumettre = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError("");
-    const errTel = erreurTelephone(tel);
-    if (errTel) return setError(errTel);
-    setBusy(true);
+    setErr(null);
+    if (!isValidPhone(tel)) return setErr(messageErreur(new ApiError("TELEPHONE_INVALIDE")));
+    if (!/^\d{4}$/.test(code)) return setErr("Le code fait 4 chiffres.");
+    setEnvoi(true);
     try {
-      const r = await api.login(normalizePhone(tel), pin);
-      router.push(await openSession(r.session.creds));
-    } catch (err) {
-      setError(errorMessage(err));
-      setBusy(false);
+      const r = await rpc<Reponse>("auth_connexion", { p_telephone: tel, p_code: code });
+      if (r.role === "foyer") {
+        enregistrerAppareil(r.qr, { jeton: r.jeton, code_affichage: r.code_affichage });
+        router.replace(`/m/${r.qr}`);
+        return;
+      }
+      ecrireJetonLivreur(r.jeton);
+      const home = await adresseLivreur(r.jeton);
+      if (!home) throw new ApiError("SESSION");
+      router.replace(home);
+    } catch (e) {
+      setErr(messageErreur(e));
+      setCode("");
+      setEnvoi(false);
     }
-  }
+  };
 
-  if (checking) {
+  if (verif) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md items-center justify-center px-4">
         <Spinner />
@@ -62,48 +80,35 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="mx-auto max-w-md px-4 pb-16 pt-8 sm:px-6">
-      <header className="mb-8 flex justify-center">
+    <main className="mx-auto min-h-dvh max-w-md px-4 pb-16 pt-5">
+      <header className="mb-8">
         <Logo href="/" />
       </header>
-
-      <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-        <div className="text-center">
-          <Badge tone="sky">Songon</Badge>
-          <h1 className="title-xl mt-4 !text-4xl sm:!text-5xl">Content de te revoir</h1>
+      <form onSubmit={soumettre} className="space-y-5" noValidate>
+        <div>
+          <h1 className="title-lg">Se connecter</h1>
+          <p className="mt-2 text-ink/70">Ton numéro et ton code à 4 chiffres (le code maison pour une famille).</p>
         </div>
-
-        <form onSubmit={submit} className="brut mt-8 space-y-5 p-5">
-          <Field label="Ton numéro de téléphone">
-            <PhoneInput value={tel} onChange={setTel} />
-          </Field>
-          <Field label="Ton code PIN">
-            <PinInput value={pin} onChange={setPin} autoComplete="current-password" />
-          </Field>
-          {error && <ErrorBox>{error}</ErrorBox>}
-          <Btn type="submit" variant="ink" size="lg" className="w-full" disabled={busy || !tel.trim() || pin.length !== 4}>
-            {busy ? "Un instant…" : "Entrer"} {!busy && <Icon name="arrow" size={20} />}
-          </Btn>
-        </form>
-
-        <div className="mt-4 text-center">
-          <button type="button" onClick={() => setOubli((v) => !v)} className="text-sm font-bold text-azur underline-offset-4 hover:underline">
-            Code oublié ?
-          </button>
-          {oubli && (
-            <p className="mt-2 rounded-2xl border-brut border-ink bg-sky p-4 text-left text-sm font-medium text-ink/80">
-              Appelle l&apos;administrateur au <strong>{depot ? formatPhone(depot) : "…"}</strong>. Après vérification, il te donne un code provisoire :
-              connecte-toi avec, puis choisis ton nouveau code.
-            </p>
-          )}
-        </div>
-
-        <div className="mt-6 text-center">
-          <Link href="/inscription" className="inline-flex items-center gap-1.5 text-sm font-bold text-ink/60 hover:text-azur">
-            Pas encore de compte ? Commander mon eau <Icon name="arrow" size={16} />
+        <Field label="Numéro de téléphone">
+          <PhoneInput value={tel} onChange={setTel} />
+        </Field>
+        <Field label="Code à 4 chiffres">
+          <CodeInput value={code} onChange={setCode} label="Code" />
+        </Field>
+        {err && <ErrorBox>{err}</ErrorBox>}
+        <Btn type="submit" size="lg" className="w-full" disabled={envoi}>
+          {envoi ? "Connexion…" : "Se connecter"}
+        </Btn>
+        <p className="text-center text-sm text-ink/60">
+          Code oublié ? Appelle le service : il te donne un code provisoire après avoir vérifié ton identité.
+        </p>
+        <p className="text-center text-sm font-semibold">
+          Pas encore inscrit ?{" "}
+          <Link href="/inscription" className="text-azur underline">
+            Inscrire ma maison
           </Link>
-        </div>
-      </motion.div>
+        </p>
+      </form>
     </main>
   );
 }

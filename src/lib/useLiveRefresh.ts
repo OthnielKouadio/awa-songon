@@ -1,19 +1,15 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { api } from "./data-provider";
+import { getSupabase } from "./supabase";
 
 /**
- * Rafraîchit des données en direct.
- * - Supabase : pings broadcast (cite:<id>, tricycle:<id>) émis par des triggers SQL.
- * - Démo     : évènements localStorage (synchro entre onglets).
- * Un polling de secours garde l'écran à jour même si le WebSocket tombe.
+ * Rafraîchit des données en direct (comme en V2) :
+ * - pings broadcast Supabase SANS donnée (maison:<id>, livreur:<id>, cite:<id>,
+ *   admin) émis par des triggers SQL → on relit via RPC (jeton exigé) ;
+ * - polling de secours si le WebSocket tombe, et au retour sur l'appli.
  */
-export function useLiveRefresh(
-  topics: (string | null | undefined)[],
-  refresh: () => void,
-  pollMs = 15000
-) {
+export function useLiveRefresh(topics: (string | null | undefined)[], refresh: () => void, pollMs = 20000) {
   const cb = useRef(refresh);
   cb.current = refresh;
   const key = topics.filter(Boolean).join("|");
@@ -34,7 +30,8 @@ export function useLiveRefresh(
       }, attente);
     };
 
-    const unsubscribe = api.subscribeTopics(key.split("|").filter(Boolean), ping);
+    const sb = getSupabase();
+    const canaux = sb ? key.split("|").filter(Boolean).map((t) => sb.channel(t).on("broadcast", { event: "changed" }, ping).subscribe()) : [];
 
     const poll = setInterval(() => {
       if (document.visibilityState === "visible") cb.current();
@@ -48,7 +45,29 @@ export function useLiveRefresh(
       if (timer) clearTimeout(timer);
       clearInterval(poll);
       document.removeEventListener("visibilitychange", onVisible);
-      unsubscribe();
+      canaux.forEach((c) => void sb?.removeChannel(c));
     };
   }, [key, pollMs]);
+}
+
+export type PositionLive = { lat: number; long: number; at: string };
+
+/** Position du livreur diffusée sur suivi:<commande> pendant « J'arrive chez toi ». */
+export function usePositionLive(commandeId: string | null, onPosition: (p: PositionLive) => void) {
+  const cb = useRef(onPosition);
+  cb.current = onPosition;
+  useEffect(() => {
+    const sb = getSupabase();
+    if (!sb || !commandeId) return;
+    const ch = sb
+      .channel(`suivi:${commandeId}`)
+      .on("broadcast", { event: "position" }, ({ payload }) => {
+        const p = payload as { lat?: number; long?: number; at?: string };
+        if (typeof p.lat === "number" && typeof p.long === "number") cb.current({ lat: p.lat, long: p.long, at: p.at ?? new Date().toISOString() });
+      })
+      .subscribe();
+    return () => {
+      void sb.removeChannel(ch);
+    };
+  }, [commandeId]);
 }

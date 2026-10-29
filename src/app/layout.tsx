@@ -8,11 +8,11 @@ import "./globals.css";
 const sora = Sora({ subsets: ["latin"], variable: "--font-sora", weight: ["600", "700", "800"] });
 const grotesk = Space_Grotesk({ subsets: ["latin"], variable: "--font-grotesk" });
 
-const DESCRIPTION = "Eau pure livrée chez vous à Songon, par tricycle. Commandez en 2 clics et suivez votre livreur en direct.";
+const DESCRIPTION = "Livraison d'eau dans votre cité. Scannez l'autocollant de votre maison et commandez en 2 clics.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: "Distribution Eau — Livraison d'eau par tricycle à Songon",
+  title: "Distribution Eau — Livraison d'eau dans votre cité",
   description: DESCRIPTION,
   applicationName: "Distribution Eau",
   // L'image (opengraph-image.tsx) est ajoutée automatiquement par Next.js.
@@ -20,10 +20,10 @@ export const metadata: Metadata = {
     type: "website",
     locale: "fr_CI",
     siteName: "Distribution Eau",
-    title: "Distribution Eau — Livraison d'eau à Songon",
+    title: "Distribution Eau — Livraison d'eau dans votre cité",
     description: DESCRIPTION,
   },
-  twitter: { card: "summary_large_image", title: "Distribution Eau — Livraison d'eau à Songon", description: DESCRIPTION },
+  twitter: { card: "summary_large_image", title: "Distribution Eau — Livraison d'eau dans votre cité", description: DESCRIPTION },
   // app/manifest.ts est servi automatiquement sur /manifest.webmanifest et lié
   // dans le <head> par Next.js — pas besoin de l'ajouter ici.
   appleWebApp: {

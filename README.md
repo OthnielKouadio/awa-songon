@@ -1,233 +1,133 @@
-# Distribution Eau — Livraison d'eau par tricycle
+# Distribution Eau V3 — Livraison d'eau dans les cités, par QR code de maison
 
-Next.js 14 (App Router) · Tailwind · Framer Motion · Supabase (DB + Realtime) · Leaflet + OpenStreetMap (gratuit, aucune clé Google).
+Next.js 15 (App Router) · Tailwind · Supabase (Postgres + Auth + RLS).
 
-## Pages publiques : `/`, `/inscription`, `/login`
+Chaque maison d'une cité fermée (Promogim, Arc-en-Ciel…) porte un autocollant 5 × 5 cm :
 
-`/` est la vitrine complète : header (« Se connecter » → `/login`, « S'inscrire » → `/inscription`), hero, étapes client, section chauffeur (bonus d'inscription, recharge, fidélité — information seulement, **aucun bouton « devenir chauffeur »**), tarifs, FAQ, footer. Si une session existe déjà dans le navigateur, `/` redirige directement vers le bon tableau de bord. Les chiffres du programme de points viennent de `src/lib/format.ts`.
+```
+        PROMO 012          ← ce que le livreur lit
+      ┌───────────┐
+      │  QR code  │        ← https://awa-songon.vercel.app/m/K7QX2P
+      └───────────┘
+   awa-songon.vercel.app/m/K7QX2P      ← à taper si le QR est abîmé
+```
 
-`/inscription` : inscription **client uniquement** (nom, téléphone, cité, lot, PIN).
+Le client scanne : 1er scan → il crée le **foyer** ; ensuite, toute la famille utilise le **code maison** à 4 chiffres. Une commande est **toujours livrée à la maison**, d'où qu'on commande.
 
-`/login` : **un seul formulaire, sans choix de rôle** — téléphone + PIN à 4 chiffres. Le serveur (`auth_login('auto', …)`) reconnaît si le numéro est celui d'un client ou d'un chauffeur et renvoie vers le bon espace. L'admin ne peut **pas** se connecter ici.
+> Toutes les fonctionnalités de la V2 sont reprises (connexion téléphone + code, aujourd'hui/demain, statuts pause/hors ligne, « J'arrive chez toi » + GPS en direct, forages, fidélité, recrutement, statistiques, Wave, liens secrets…), adaptées aux maisons. Le code V2 d'origine reste dans la branche `archive/v2` (tag `v2-final`) ; ses données sont rangées dans le schéma `archive_v2`.
 
-### Liens secrets
+## Pages
 
-Tous les chemins sont dans `.env.local` (voir [`.env.example`](.env.example)) ; les dossiers réels de `src/app` qu'ils servent répondent **404** en accès direct.
-
-| Variable | Dossier servi | À quoi ça sert | Contrôle (middleware) |
-|---|---|---|---|
-| `DRIVER_SIGNUP_PATH` | `recrutement-chauffeur` | Formulaire d'inscription chauffeur, direct. **L'admin envoie ce lien** au chauffeur qu'il recrute. | Aucun compte requis (secret + `noindex`) |
-| `ADMIN_LOGIN_PATH` | `acces-admin` | « Accès administrateur » : email + mot de passe. Ne le partage avec personne. | Toujours affichée (une session client/chauffeur ouverte est remplacée à la connexion) ; admin déjà connecté → cockpit |
-| `DRIVER_PATH` | `chauffeur` | Espace chauffeur (le navigateur y est envoyé après connexion) | Pas de session → `/login` ; autre rôle → **404** |
-| `ADMIN_PATH` | `admin` | Cockpit admin, `/statistiques`, `/parametres` | Pas de session → page d'accès admin ; autre rôle → **404** |
-
-Aucun chemin ne doit en contenir un autre (sinon un chauffeur recruté devine une partie d'un lien admin). La session est un cookie `httpOnly` posé par [`/api/session`](src/app/api/session/route.ts) après chaque connexion ; le jeton est revérifié en base à chaque requête (`session_valide`). Les chemins ne sont jamais dans le JavaScript public. Pour en changer : modifie les variables puis redéploie (les anciens liens donnent alors 404).
-
-| Route | Rôle | Accès |
+| Route | Qui | Rôle |
 |---|---|---|
-| `/` | Tout le monde | Vitrine (hero, étapes, section chauffeur, tarifs, FAQ) |
-| `/inscription` | Tout le monde | Inscription client |
-| `/login` | Clients et chauffeurs | Connexion téléphone + PIN, sans choix de rôle |
-| `/dashboard` | Client | Tableau de bord : tricycles de sa cité, commande, suivi, annulation |
-| `/suivi/[id]` | Client | Lien direct de suivi (partageable, sans compte) |
-| `/bloque` | Client | Solde insuffisant : recharge Wave (redirection automatique) |
-| `/<DRIVER_SIGNUP_PATH>` | Chauffeur recruté | Inscription chauffeur |
-| `/<DRIVER_PATH>` | Chauffeur | PAUSE/REPRENDRE, file d'attente, « J'arrive chez toi », prix, OFFLINE |
-| `/<ADMIN_LOGIN_PATH>` | Admin | Connexion email + mot de passe |
-| `/<ADMIN_PATH>` | Admin | Dashboard, cités, forages, chauffeurs, clients, commandes, sécurité |
-| `/<ADMIN_PATH>/statistiques` | Admin | Statistiques annuelles |
-| `/<ADMIN_PATH>/parametres` | Admin | Numéro de dépôt Wave |
+| `/` | Public | Vitrine (hero, étapes, section chauffeur, tarifs, FAQ) + « mes maisons » + code sous le QR |
+| `/login` | Familles et livreurs | **Une seule connexion** : numéro + code (code maison pour une famille), sans choisir son rôle |
+| `/inscription` | Public | Comment inscrire sa maison (QR du portail, ou code imprimé dessous) |
+| `/m/[qr_token]` | Lien du QR | Maison LIBRE → créer le foyer · OCCUPÉE → code maison → commander (aujourd'hui / demain), suivre en direct, « Livré ! », menu (historique, consommation, partager le suivi, changer le code, recharger via Wave) |
+| `/suivi/[id]` | Lien partagé | Suivi d'une commande sans compte (statut, file, carte en direct) — aucune donnée du foyer |
+| `/avis/[commande_id]` | Foyer livré uniquement | Noter le livreur (5 étoiles + commentaire), une seule fois, 7 jours max |
+| `/avis-plateforme` | Foyer connecté | Avis sur le service (1 par foyer et par semaine) |
+| `/<DRIVER_PATH>` | Livreurs | PAUSE / REPRENDRE / OFFLINE, file, « Je pars livrer » → « J'arrive chez toi » (GPS) → « Livré », prix, statistiques, fidélité, saisie directe |
+| `/<DRIVER_SIGNUP_PATH>` | Chauffeur recruté | Inscription (invisible jusqu'à validation par l'admin) |
+| `/<ADMIN_PATH>/dashboard` | Admin (2FA) | Compteurs du jour, CA, alertes, carte des livreurs et des maisons |
+| `…/commandes` · `…/maisons` · `…/livreurs` · `…/cites` | Admin | Flux temps réel · maisons, QR, impression · livreurs (validation, codes, recharges, payé/impayé, avis) · cités, **forages** et réglages (essai, coûts, Wave) |
+| `…/statistiques` · `…/anciens-clients` · `…/avis-plateforme` · `…/securite` | Admin | Stats annuelles + CSV/Excel · rattacher les clients V2 à leur maison · avis · mot de passe |
 
-## Thème et composants custom
+**Liens secrets (V2)** : `ADMIN_PATH`, `DRIVER_PATH` et `DRIVER_SIGNUP_PATH` dans `.env.local` (8 à 64 caractères, lettres/chiffres/-/_). Les dossiers réels (`/admin`, `/livreur`, `/recrutement-chauffeur`) répondent 404 dès qu'un secret est défini. La vraie protection reste en base (2FA admin, jetons, codes).
 
-Palette 100 % bleue via les tokens Tailwind `paper`/`ink`/`mist`/`azur`/`sky`/`danger` (fond `#F7FBFF`, bordures `#0A1931`, cartes `#EDF6FF`, bordure 2px, coins 24px, ombre dure `4px 4px 0px`) — appliquée partout, y compris les menus déroulants et les popups de confirmation.
+## Installation (base vide)
 
-**Aucun `<select>`, `alert()` ni `confirm()` natif du navigateur.** Deux composants custom les remplacent partout dans l'appli (formulaires d'inscription, panneaux admin) :
-- [`CustomSelect`](src/components/CustomSelect.tsx) : menu déroulant en boutons (`onClick`, fiable sur mobile), forme pilule, options ou groupes d'options (ex. sources groupées par cité).
-- [`CustomModal`](src/components/CustomModal.tsx) : modal thémée, plus un hook `useConfirm()` qui remplace `window.confirm()` par une popup `await confirm(message)`.
+1. **Supabase** : crée un projet → **SQL Editor** → colle et lance [`supabase/schema.sql`](supabase/schema.sql) en entier (relançable).
+2. **Variables** : `cp .env.example .env.local` et renseigne `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+3. **Premier admin** :
+   - Supabase → **Authentication → Users → Add user** (email + mot de passe long et unique).
+   - SQL Editor :
+     ```sql
+     insert into public.admins (user_id, email)
+     select id, email from auth.users where email = 'toi@exemple.com';
+     ```
+   - Ouvre `/admin` : l'appli impose d'activer la **double authentification** (Google Authenticator / Authy) avant tout accès.
+4. **Verrouiller Supabase Auth** : *Authentication → Sign In / Providers* → **désactive « Allow new users to sign up »**. (Même sans ça, un inscrit n'aurait accès à rien, mais autant fermer la porte.)
+5. **Réglages** (`/admin/cites`, en bas) : mets **ton vrai domaine** *avant* de générer les maisons — il est imprimé dans chaque QR — et la **date de fin de l'essai gratuit**.
+6. `npm install && npm run dev`. En production : Vercel avec les mêmes variables.
 
-**Aucun compte admin par défaut** (ni en démo, ni sur Supabase) : voir « Créer le compte admin » plus bas.
+## Créer et imprimer les autocollants
 
-## Lancer
+1. `/admin/cites` → **Nouvelle cité** : `Promogim` / `PROMO`.
+2. `/admin/maisons` → **Générer un lot** : Promogim, 1 → 300. Chaque maison reçoit un jeton aléatoire unique. Relancer un lot ne crée jamais de doublon (numéros existants ignorés).
+3. Pour l'imprimeur, au choix :
+   - **CSV** : `code_affichage,qr_token,lien_qr,cite,numero` (impression de données variables) ;
+   - **PDF prêt à imprimer** : *Voir / imprimer les autocollants* → *Imprimer / PDF* (A4, échelle 100 %). Vectoriel, net à toutes les tailles.
 
-```bash
-npm install
-npm run dev
-```
+Les QR sont générés dans le navigateur ([`PrettyQr`](src/components/PrettyQr.tsx)) : modules arrondis reliés, yeux bleus, goutte au centre, correction d'erreur **H (30 %)**. Lisibilité testée avec un décodeur (jsQR) jusqu'à 130 px et avec flou.
 
-Il faut un `.env.local` (copie de [`.env.example`](.env.example)) avec au minimum `DRIVER_SIGNUP_PATH`, `ADMIN_LOGIN_PATH`, `DRIVER_PATH` et `ADMIN_PATH`.
+## Livreurs
 
-**Mode démo** : `NEXT_PUBLIC_DEMO_MODE=true` → données dans le `localStorage` du navigateur, sans Supabase. C'est le **même code métier** : tout passe par [`src/lib/data-provider.ts`](src/lib/data-provider.ts), qui choisit une seule fois entre `remote.ts` (Supabase) et `mock.ts` (démo) ; hors démo, `mock.ts` n'est même pas inclus dans le build. Un build de production avec `NEXT_PUBLIC_DEMO_MODE=true` échoue (sauf `ALLOW_DEMO_BUILD=true` pour un site de démo assumé), et `?demo=…` est retiré de l'URL hors démo. Sans variables Supabase et sans mode démo, l'app affiche une erreur claire : elle ne bascule plus jamais toute seule en démo. Ouvre plusieurs onglets du même navigateur pour voir client/chauffeur/admin interagir en temps réel (les données ne sont **pas partagées entre navigateurs différents** en mode démo — c'est un vrai backend qu'il faut pour ça, voir plus bas).
+Pas d'inscription libre : **seuls les livreurs que l'admin crée peuvent se connecter**.
 
-Comptes de démo (PIN `1234`) :
-- Chauffeurs : Kader `0700000001` (Cité 1, actif, 2 500 FCFA), Yao `0700000002` (Cité 1, actif, en livraison), Seydou `0700000005` (Cité 1, hors ligne — démo des commandes programmées), Moussa `0700000003` (Cité 2, en pause — démo des commandes QUEUED), Koffi `0700000004` (Cité 3, solde de points épuisé — démo de la page bloquante).
-- Clients : Fatou `0701020304` (Cité 1, lot 12, payé), Issa `0705060708` (Cité 1, lot 7, impayé), Aya `0709101112` (Cité 1, lot 21, payé).
-- Admin : uniquement si tu définis `NEXT_PUBLIC_DEMO_ADMIN_EMAIL` et `NEXT_PUBLIC_DEMO_ADMIN_PASSWORD` dans ton `.env.local` (rien n'est codé en dur).
+1. `/admin/livreurs` → **Nouveau livreur** (cité, nom, numéro, prix de l'eau).
+2. **Créer l'accès** : un code à 4 chiffres s'affiche **une seule fois**, avec un message prêt à envoyer (WhatsApp ou copier) : lien `…/livreur`, numéro, code.
+3. Le livreur ouvre le lien, se connecte, et **choisit son propre code** (obligatoire avant toute action). Il ajoute l'appli à son écran d'accueil.
+4. Il passe **En service** : il devient visible des clients de sa cité. En **pause**, il disparaît de la liste.
+5. Code oublié → **Nouveau code** (ses téléphones sont déconnectés). Problème → statut **Bloqué**.
 
-L'onglet **Sécurité** de l'espace admin affiche un bouton pour réinitialiser les données de démo.
+Dans sa file : « **PROMO 012** – Famille Koffi – commandé par Maman », Appeler, **Itinéraire** (si la position est connue), **Je pars livrer**, puis **Je suis devant la maison** (enregistre la position si elle manque), **Confirmer la famille** (foyer « à vérifier »), **Livré**. Le téléphone vibre quand une commande arrive (rafraîchi toutes les 15 s).
 
-## Passer sur Supabase (données partagées entre appareils)
+**Saisie directe** : pour un client qui appelle ou une famille sans smartphone, le livreur tape le numéro de la maison (`12`, `PROMO 012`…). Maison sans foyer inscrit → nom + numéro obligatoires. Rien n'est débité au foyer.
 
-1. Crée un projet Supabase, puis **SQL Editor** → lance [`supabase/schema.sql`](supabase/schema.sql) (idempotent).
-2. Facultatif : [`supabase/seed.sql`](supabase/seed.sql) (3 cités + 3 sources — clients et chauffeurs s'inscrivent eux-mêmes).
-3. `cp .env.example .env.local` et renseigne `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Project Settings → API), `NEXT_PUBLIC_DEMO_MODE=false`, et les quatre chemins secrets **aléatoires** (`DRIVER_SIGNUP_PATH`, `ADMIN_LOGIN_PATH`, `DRIVER_PATH`, `ADMIN_PATH`).
-4. Vercel : les mêmes variables d'environnement, puis déploie.
-5. **Database → Extensions → active `pg_cron`**, puis relance `schema.sql` : il programme les tâches de 23h59 (commandes en pause → demain 8h), 8h00 (commandes programmées → file du jour) et la purge des positions GPS toutes les 5 min. Sans pg_cron, le script passe quand même mais affiche un avertissement et ces tâches ne tournent pas.
+## Position des maisons
 
-### Créer le compte admin
+- **Mode pose** : connecté en admin (2FA) sur ton téléphone, colle l'autocollant, scanne-le : la page de la maison affiche **« Enregistrer la position ici »**. La pose fait foi (remplace toute position).
+- **Par le livreur** : si la maison n'a pas de position, « Je suis devant la maison » l'enregistre (uniquement pour sa propre commande en cours, jamais pour écraser une position existante).
+- Fiche maison (admin) : voir sur la carte / effacer. Seul le **portail** est localisé, jamais le téléphone d'un client.
 
-Dans **SQL Editor** (jamais depuis l'appli : la fonction est interdite à l'API) :
+## Essai gratuit
 
-```sql
-select public.admin_definir('toi@exemple.com', 'un-mot-de-passe-long-et-unique');
-```
-
-Connexion ensuite sur `/<ADMIN_LOGIN_PATH>` avec cet email et ce mot de passe. La même commande réinitialise le mot de passe d'un admin existant (sessions coupées). Le mot de passe passe alors par l'historique du SQL Editor : change-le ensuite dans l'onglet **Sécurité** (10 caractères minimum).
-
-> **Migration v7** : si l'ancien mot de passe admin par défaut n'avait jamais été changé, `schema.sql` **désactive** ce compte (il était public) — recrée-le avec `admin_definir`. **v8** : l'admin se connecte par email ; un ancien admin sans email doit être recréé avec `admin_definir('email', …)`. Les PIN et mots de passe existants restent valides : ils passent en bcrypt au prochain login réussi. Les comptes en double (`07…` / `+225…` / `00225…`) sont fusionnés (le plus ancien est gardé, commandes et points rattachés, soldes additionnés, détail dans `journal_actions` → `FUSION_DOUBLON_TELEPHONE`).
-
-> ⚠️ Ce schéma **n'utilise pas Supabase Auth** — les 3 rôles se connectent par téléphone + code via des fonctions RPC. Une base **v4** est migrée automatiquement par `schema.sql` (cités multiples → une seule, DISPO/OFF → ACTIVE/OFFLINE, EN_ATTENTE → ASSIGNED, LIVRE → LIVREE). Pour une version antérieure à la v4, repars d'un projet vide.
+Une **date de fin d'essai** pour tout le monde, réglée dans `/admin/cites` → Réglages (2 ans maximum, vide = pas d'essai). Jusqu'à cette date incluse : **aucun point débité**, ni aux foyers ni aux livreurs, et la date est affichée dans leurs écrans. Ensuite : 100 points par commande pour le foyer, 50 pour le livreur (réglables). Un livreur sous 50 points devient invisible et ne peut plus se remettre en service tant qu'il n'est pas rechargé.
 
 ## Règles métier
 
-- **Comptes obligatoires** pour client et chauffeur (nom, téléphone, PIN à 4 chiffres qu'ils choisissent). Cité et lot sont fixés à l'inscription du client — plus besoin de les ressaisir à chaque commande.
-- **Verrouillage par cité** : 1 client = 1 cité, 1 chauffeur = 1 cité (`tricycles.cite_id`), choisies à l'inscription et **non modifiables** (affichées en badge grisé : « Tu commandes à Cité 1 » / « Tu livres à Cité 1 »). Un client ne voit **que** les tricycles de **sa** cité, et `creer_commande` refuse côté serveur toute commande hors zone (HTTP 403 `HORS_ZONE`, « Ce tricycle ne livre pas dans ta cité »), même via un appel forgé. Si le forage du chauffeur est à plus de 7 km de la position du client : « Aucun tricycle disponible » (`TROP_LOIN` ; contrôle ignoré si l'une des deux positions est inconnue).
-- La **source (le forage) est facultative** — un chauffeur qui n'en fixe pas puise "un peu partout" dans sa cité ; s'il en choisit une, elle doit appartenir à sa cité.
-- **Le chauffeur ne refuse jamais** : il reste visible et commandable quel que soit son statut. Il ne disparaît que si l'admin le bloque ou si son solde de points est épuisé.
-- **Une seule quantité : 1000 L.** 1 commande = 1 voyage = 1000 L.
-- **Prix** : chaque chauffeur fixe son prix pour 1000 L (100 à 50 000 FCFA), modifiable à tout moment. Le prix est **figé dans la commande** : un changement de tarif n'affecte pas les commandes déjà passées.
-- **Règle Attiéké — une seule commande active à la fois** (QUEUED, ASSIGNED, PROGRAMMED, EN_COURS ou ARRIVING) : sinon HTTP 403 « Tu as déjà une commande en cours (#A1B2C3). Sois livré ou annule avant d'en repasser une autre ».
-- **Annulation** : le client peut annuler tant que le chauffeur n'est pas parti (QUEUED / ASSIGNED / PROGRAMMED). La file remonte d'un cran et les points sont rendus des deux côtés (`REMBOURSEMENT` dans `points_transactions`).
-- Temps estimé = position dans la file × 35 min.
-- « Livré » sort la commande de la file, fait remonter les suivants d'un cran, et le client voit un écran **« Livré ! »** qu'il ferme lui-même (bouton « Commander à nouveau ») avant de repasser en mode commande.
-- **Appel direct uniquement — aucun bouton WhatsApp** nulle part : `tel:` pour client → chauffeur (via son suivi) et chauffeur → client (dans sa file, avec le nom du client).
-- GPS optionnel (client) : pop-up custom → `getCurrentPosition()`. Accepté à l'inscription et ré-actualisable à chaque commande ; refusé ou indisponible → la commande part avec la position déjà enregistrée, ou sans GPS.
-- « Naviguer » ouvre `https://www.google.com/maps/dir/?api=1&destination=lat,long` (lien simple, aucune API payante).
-## Statuts chauffeur et file d'attente
-
-Le tableau de bord chauffeur (`/chauffeur`) : en haut, un gros bouton orange **PAUSE** (‖) qui devient vert **REPRENDRE** ; au centre, **« Commandes en file d'attente (X) »** ; tout en bas, un petit bouton gris **OFFLINE** avec confirmation (« Sûr de vouloir passer hors ligne ? »).
-
-| Statut chauffeur | Nouvelle commande | Message client |
-|---|---|---|
-| `ACTIVE` | `ASSIGNED` (dans sa file) | « Tu es N°x chez Kader » |
-| `PAUSED` (garage, repas) | `QUEUED`, livrée aujourd'hui (FIFO) | « Chauffeur en pause, tu seras livré aujourd'hui - Position n » |
-| `OFFLINE` (il dort) | `PROGRAMMED` pour le prochain 8h00 | « Chauffeur hors ligne, commande programmée demain 8h » |
-
-- **REPRENDRE** (→ `ACTIVE`) : toutes ses commandes `QUEUED` lui sont assignées d'un coup, dans l'ordre de la file.
-- **Cron 23h59** (`rollover_queued_orders`) : les `QUEUED` non livrées passent `PROGRAMMED` pour demain 8h ; le client voit le nouveau message tout seul (ping `client:<id>`).
-- **Cron 00h00, rattrapage à 8h00** (`release_programmed_orders`) : les `PROGRAMMED` dont le jour est arrivé deviennent `ASSIGNED` si le chauffeur est déjà actif, sinon `QUEUED`.
-- Cycle d'une livraison : `ASSIGNED` → « Je pars livrer » → `EN_COURS` (client : « Chauffeur en route - 15 min », sans carte) → **« J'ARRIVE CHEZ TOI »** → `ARRIVING` → « Livré » → `LIVREE`.
-
-## Saisie directe par le chauffeur
-
-- Bouton **« Nouvelle commande - Saisie directe »** sur `/chauffeur` : nom complet, téléphone ivoirien (10 chiffres, 01/05/07/21/25/27, `+225` accepté), quartier / secteur (lots connus de sa cité, ou saisie libre), quantité de bidons et note facultatives.
-- Le client est retrouvé par son numéro ; sinon il est créé en **client temporaire** (`clients.is_temporary`). S'il s'inscrit plus tard avec ce numéro, il récupère ce compte et son historique.
-- La commande entre directement dans la file (`ASSIGNED`) avec `source = 'manual'` et `added_by_driver_id`, et coûte 50 points au chauffeur comme une commande normale (rien côté client). L'action est tracée dans `journal_actions` (`COMMANDE_MANUELLE`).
-- Les mêmes règles s'appliquent : même cité uniquement (`HORS_ZONE`), une seule commande active par client.
-- Dans les files chauffeur et admin : badge **APPLICATION** (plein, point vert) ou **MANUEL** (contour, point orange), mention « Ajouté par [chauffeur] à [heure] », et filtre **Tous | Application | Manuel**.
-
-## Livraison aujourd'hui ou demain
-
-- À la commande, le client choisit **Aujourd'hui** ou **Demain**, aucune autre date (`commandes.scheduled_for`). Demain : commande `PROGRAMMED` pour demain 8h.
-- **Cron 00h00** (et rattrapage à 8h00) : les commandes dont le jour est arrivé entrent dans la file.
-- Une commande programmée pour un jour suivant **n'est plus annulable après 18h la veille** (`annulable_jusqua`, refus `ANNULATION_TARDIVE`).
-
-## Statistiques — `/admin/statistiques`
-
-Lien « Statistiques » dans la barre du cockpit admin. Toute la page vient d'**un seul appel** à la fonction RPC `get_yearly_stats(p_tel, p_token, year_param, p_cite, p_tricycle)` (admin uniquement). Les mois sont ceux de la date de commande, heure d'Abidjan.
-
-- **Filtres** (barre collante) : année, mois, zone (cité), chauffeur. Export CSV (`;`, compatible Excel FR) et Excel (`.xlsx`, 3 feuilles : récap mensuel, indicateurs, chauffeurs).
-- **12 indicateurs** : volumes, chiffre d'affaires, clients et qualité. Pour l'année en cours, la variation est comparée à la **même période** de l'an dernier.
-- **6 graphiques** (Recharts) et un **récapitulatif mensuel** avec recherche, pagination et ligne Total.
-- Définitions :
-  - CA et panier moyen : commandes **livrées** uniquement.
-  - Échec : commande encore ouverte après son jour de livraison prévu.
-  - Bidons : quantité déclarée lors des saisies manuelles.
-  - Remboursements : points rendus aux clients sur annulation (1 point = 1 FCFA).
-  - Temps moyen : `livree_at − created_at`, connu seulement pour les livraisons faites depuis cette version.
-
-## Période d'essai et facturation
-
-- Table `settings` (une ligne) : `trial_ends_at = 2026-12-31`. L'admin affiche un bandeau « Période d'essai jusqu'au 31 décembre 2026 ».
-- Chaque livraison est journalisée dans `journal_actions` (`FACTURATION`) avec son montant, son origine et `facturable = false` pendant l'essai. Rien n'est bloqué ni débité pour l'instant.
-
-## GPS live — uniquement pendant ARRIVING
-
-Le GPS du chauffeur **n'est plus actif en permanence** : il ne démarre qu'au clic sur « J'ARRIVE CHEZ TOI » et se coupe tout seul après **10 min** ou à la livraison.
-
-- **Téléphone du chauffeur** ([useGeoWatch](src/lib/useGeoWatch.ts)) : envoie toutes les 10 s s'il bouge (≥ 15 m), toutes les 30 s pour un petit déplacement (5–15 m), **rien à l'arrêt**.
-- **Serveur** (`chauffeur_set_position`) : refuse toute position hors `ARRIVING` / hors fenêtre de 10 min (`{actif:false}` → le téléphone coupe le GPS). Sinon, il écrase la dernière position dans `positions_live` (table `UNLOGGED`, TTL 5 min, purgée par cron — rôle d'un cache type Redis), garde **1 point toutes les 2 min** dans `positions_historique`, et diffuse la position **directement sur `suivi:<commande_id>`**, que seul le client concerné écoute. Aucune table surveillée n'est touchée : plus de rechargement de toute la cité ni de l'admin à chaque position.
-- **Client** : la carte live (sa position + le tricycle + distance) ne s'affiche que si la commande est `ARRIVING`.
-
-## Statuts de compte — PAYE / IMPAYE / BLOQUE
-
-Gérés **uniquement par l'admin**, jamais par le titulaire du compte.
-
-- **Client BLOQUÉ** : ne peut plus commander (écran « Compte bloqué, contacte l'administrateur »). Une commande déjà en cours reste livrable normalement.
-- **Chauffeur BLOQUÉ** : repasse OFFLINE automatiquement, disparaît de la liste publique, et ne peut plus se remettre actif ou en pause lui-même tant que l'admin ne le débloque pas.
-- Marquer un client **PAYÉ** enregistre la date de paiement (visible dans l'onglet Clients).
-
-## Essai gratuit — 2 mois par compte, points illimités
-
-- Chaque nouveau compte (client **et** chauffeur) a **2 mois d'essai gratuit** à partir de son inscription (`clients.essai_fin` / `tricycles.essai_fin`, durée réglée par `settings.essai_mois`). Les comptes inscrits avant la v9 ont 2 mois à partir de leur date d'inscription.
-- Pendant l'essai : **rien n'est débité**, commandes et livraisons illimitées. Le badge « Essai gratuit » remplace le statut et le solde.
-- **3 jours avant la fin**, un bandeau prévient : date de fin + numéro de dépôt Wave pour recharger.
-- Après l'essai : le badge disparaît, statut et solde reviennent, et le paiement commence. Solde de départ **0** : sans recharge, le client arrive sur la page « Recharge ton compte pour continuer » (`/bloque`) et le chauffeur sur sa page bloquante (invisible des clients).
-- À l'annulation, seuls les points réellement débités sont rendus (`commandes.client_debite` / `chauffeur_debite`) : une commande passée pendant l'essai ne « rend » rien.
-
-## Points client — 1 FCFA = 1 point (après l'essai)
-
-- Chaque commande coûte **100 points**, déduits à la création (rendus si le client annule).
-- Sous 100 points, le tableau de bord redirige vers **`/bloque`** (recharge Wave via l'admin, onglet Recharges).
-
-## Points chauffeur — 1 FCFA = 1 point, indépendant du statut PAYE/IMPAYE/BLOQUE
-
-Chaque chauffeur a un solde de points (`solde_points`), distinct du statut PAYE/IMPAYE/BLOQUE :
-
-- **2 mois d'essai gratuit** à l'inscription (voir plus haut), solde de départ 0. Ensuite, le chauffeur paie (recharge Wave, via l'admin).
-- **Chaque commande reçue** coûte **50 points**, déduits à sa création (1 citerne = 1000 L = la seule quantité de cette appli), rendus si le client annule.
-- **Après l'essai, sous 50 points**, `is_offline` passe à `true` : le chauffeur disparaît de `tricycles_dispo` (invisible des clients, quel que soit son statut) et ne peut plus se remettre actif ou en pause lui-même. Son tableau de bord (`/chauffeur`) affiche alors une page bloquante : « Solde épuisé — Rechargez par Wave au <numéro de dépôt> pour continuer. Minimum 1000F (1000 points) » + son solde actuel + bouton d'appel direct.
-- **Fidélité** : chaque déduction incrémente `total_points_utilises` ; dès qu'il atteint **5000**, +50 points sont offerts automatiquement, le compteur repart à 0, et un toast « Bravo ! 1 livraison gratuite offerte (+50 pts) » s'affiche côté chauffeur.
-- **Recharge manuelle** : onglet **Recharges** de l'admin — liste des chauffeurs avec leur solde, champ pour ajouter des points (montant obligatoirement multiple de 50), débloque automatiquement le chauffeur si le solde repasse ≥ 50. Chaque recharge (et chaque déduction/bonus) est loguée dans `points_transactions` — aucune interface ne l'affiche pour l'instant, c'est une traçabilité interne.
-- Pas d'agrégateur de paiement : la recharge Wave est reçue manuellement par l'admin, qui l'enregistre lui-même dans l'appli.
-
-## Code PIN oublié
-
-Pas de SMS : le client ou le chauffeur clique « Code oublié ? » sur `/login`, qui lui dit d'appeler l'administrateur (numéro de dépôt). Après avoir vérifié son identité au téléphone, l'admin clique **Code provisoire** dans l'onglet Clients ou Chauffeurs : un code à 4 chiffres s'affiche une seule fois, à dicter. L'ancien code ne marche plus et la session en cours est coupée. À la connexion suivante, l'appli impose de choisir un nouveau code avant toute autre action.
-
-## Validation des chauffeurs (anti-intrusion)
-
-Un chauffeur inscrit par le lien de recrutement est **invisible des clients** et ne peut pas se mettre en service tant que l'admin ne l'a pas validé : il voit « Compte en attente de validation ». Le cockpit affiche une alerte tant qu'il reste des chauffeurs à valider ; l'onglet Chauffeurs les place en tête avec un bouton **Valider** (vérifier d'abord son identité, sa pièce, son tricycle). Pour un intrus : **Bloquer** ou supprimer. Si le lien de recrutement a fuité, change `DRIVER_SIGNUP_PATH` et redéploie : l'ancien lien donne 404.
-
-## Super admin — le cockpit
-
-- **Dashboard** : nombre de clients, de chauffeurs, commandes du jour, CA estimé du jour, carte globale temps réel.
-- **Cités** / **Forages** : CRUD complet (ajout, renommage, suppression avec confirmation, cascade).
-- **Chauffeurs** : liste avec cité, prix, fin d'essai, **Valider** / **Code provisoire**, statut actif / en pause / hors ligne, statut PAYE/IMPAYE/BLOQUE, bouton « Commandes » pour voir son historique, suppression définitive.
-- **Recharges** : liste des chauffeurs avec leur solde de points, recharge manuelle après paiement Wave.
-- **Clients** : liste avec cité/lot, fin d'essai, statut, date de paiement, **Code provisoire**, mêmes actions.
-- **Recherche par numéro ou nom** dans les onglets Clients, Chauffeurs et Recharges (n'importe quelle écriture : `07…`, `+225…`).
-- **Commandes** : flux temps réel de toutes les commandes, filtrable par statut.
-- **Sécurité** : changer le mot de passe admin.
-- **Paramètres** (`/<ADMIN_PATH>/parametres`) : numéro de dépôt Wave (`settings.depot_phone`, `0789855418` par défaut). C'est la **seule** source du numéro affiché (accueil, page « Solde insuffisant », espace chauffeur, affiché `07 89 85 54 18`) : aucun numéro n'est codé en dur dans le front.
-
-## Téléphones — une seule forme
-
-[`src/lib/phone.ts`](src/lib/phone.ts) (et `public.normalize_phone` côté SQL, identique) ramène tout numéro à `0XXXXXXXXX` : `0789855418`, `07 89 85 54 18`, `+225789855418`, `+2250789855418`, `00225789855418` = **le même compte**. Appliqué à l'inscription, au login, à la saisie manuelle chauffeur et au numéro de dépôt. En base, `clients.phone_normalized` et `tricycles.phone_normalized` sont `UNIQUE`. Le `0` n'est ajouté qu'aux numéros à 9 chiffres : les fixes (`27 21 …`) font déjà 10 chiffres. Tests : `npm test`.
+- **Maison ≠ foyer.** La maison (`PROMO 012`, QR, lien) ne change jamais (trigger `MAISON_IMMUABLE`). Le foyer (nom, code, solde) part avec les occupants.
+- **Code maison** : 4 chiffres, bcrypt, refusé s'il est trop simple (`1234`, `0000`, `1122`…) ou s'il contient le numéro de la maison. Redemandé **à chaque commande**.
+- **Une commande en cours par foyer** (verrou + index unique) : si Maman a commandé, Papa voit sa commande au lieu d'en créer une 2e.
+- **Points = crédits de livraison NON REMBOURSABLES.** Case obligatoire à la création du foyer (date et version enregistrées), mention « Crédit non remboursable » sous chaque bouton de recharge. Une recharge est un achat définitif. Annulation avant départ du livreur → points **recrédités** sur le portefeuille (jamais d'argent).
+- **Coût d'une commande** : réglable (`/admin/cites` → Réglages, 100 points par défaut). Le prix de l'eau (fixé par livreur) est payé au livreur.
+- **Clôture du foyer** (départ du locataire) : s'il reste des points → alerte « Ce foyer a X points. Ils seront perdus définitivement car non remboursable. Confirmer ? ». Puis foyer ARCHIVE, téléphones déconnectés, code effacé, solde à 0 (trace `PERTE_CLOTURE`), maison LIBRE, **même QR**. Refusée s'il y a une commande en cours.
+- **Recharge** : le client paie par Wave puis appelle le service ; l'admin crédite dans la fiche maison (référence Wave facultative).
 
 ## Sécurité
 
-- Aucune table sensible (`clients`, `tricycles`, `commandes`, `admins`) n'est lisible directement, même par un compte Supabase authentifié classique — tout passe par des fonctions RPC `security definer` qui vérifient elles-mêmes un jeton de session (comme pour les chauffeurs dans les versions précédentes, désormais généralisé aux 3 rôles).
-- PIN/mot de passe **hachés en bcrypt** (pgcrypto, jamais stockés en clair) ; connexion = nouveau jeton à chaque fois (une reconnexion invalide l'ancien jeton — se connecter ailleurs déconnecte l'appareil précédent).
-- 5 échecs de code → compte bloqué 15 minutes (sinon un PIN à 4 chiffres se devine en quelques minutes).
-- Temps réel : pings broadcast sans donnée (`cite:<id>`, `tricycle:<id>`, `client:<id>`, `admin`), puis rechargement via RPC ; polling de secours (8–15 s) si le WebSocket tombe.
-- Aucun identifiant admin en dur, ni dans le front ni dans le SQL. Compte admin créé à la main (`admin_definir`), mot de passe de 10 caractères minimum.
-- `anon` / `authenticated` n'ont **aucun droit SQL** sur les tables sensibles (en plus de RLS sans policy) : seules les RPC, qui contrôlent le jeton et filtrent sur l'id de l'appelant, y accèdent. C'est l'équivalent, sans Supabase Auth, de « le chauffeur ne voit que ses lignes, l'admin voit tout, anon rien ».
-- Espaces admin/chauffeur sur URL secrètes, gardées par le middleware (voir plus haut), avec `noindex` et `Referrer-Policy: strict-origin` : les tuiles de carte et les polices ne reçoivent que le nom du site, jamais le chemin secret (OpenStreetMap exige ce Referer, sans lui la carte affiche « Access blocked »).
+| Menace | Protection |
+|---|---|
+| Deviner les QR des voisins (`?m=001`, `?m=002`…) | Jeton aléatoire cryptographique de 6 caractères (32⁶ ≈ 1 milliard), 30 jetons inconnus max par IP et par heure |
+| Passant qui scanne un autocollant | Ne voit **aucun nom** : seulement « PROMO 012 – déjà inscrite » |
+| Force brute du code à 4 chiffres | 10 codes faux / 24 h par maison → **verrouillée pour les nouveaux téléphones seulement** (la famille déjà connectée continue de commander) ; 20 échecs / 15 min par IP ; 5 / 15 min par téléphone. 10 000 codes à 10 essais/jour ≈ 3 ans |
+| Bloquer une famille en tapant des faux codes | Impossible : le verrou ne touche pas les téléphones déjà connectés |
+| 1er scan par un usurpateur | Badge « À vérifier » dans l'admin, « Marquer vérifié », clôture du foyer en un clic |
+| QR arraché / copié | « Nouveau QR » : l'ancien lien meurt immédiatement |
+| Code qui a fuité / oublié | « Code oublié » : nouveau code affiché une fois à l'admin, tous les téléphones déconnectés |
+| Vol d'un téléphone de la famille | Le code maison reste demandé à chaque commande |
+| Lecture/écriture directe des tables | RLS sur toutes les tables, **aucun** droit pour `anon`/`authenticated` ; lecture réservée à l'admin 2FA ; écritures uniquement via fonctions `security definer` qui valident tout |
+| Mot de passe admin volé | **2FA obligatoire** : chaque fonction admin exige `aal2` (`is_admin()`) |
+| Faux livreur | Aucune inscription libre ; code provisoire à changer à la 1re connexion ; 5 codes faux → 15 min de blocage (les téléphones déjà connectés continuent) ; un numéro inconnu reçoit la même réponse qu'un code faux |
+| Livreur qui touche les commandes d'un autre / déplace une maison | Chaque action vérifie que la commande est **la sienne** ; position acceptée seulement pour sa commande en cours, en Côte d'Ivoire, et jamais par-dessus une position existante |
+| Falsifier l'historique des points | `transactions_points`, `journal_admin` et `avis_livreurs` : modification et suppression interdites par trigger, même en SQL |
+| Faire livrer ailleurs / noter la livraison d'un autre | Maison et foyer déduits du jeton côté serveur, jamais d'un paramètre envoyé par le téléphone |
+| Injection de formule dans le CSV | Cellules `= + - @` neutralisées |
+| XSS / fuite de jeton | CSP stricte (scripts et connexions limités au site et à Supabase), aucun HTML injecté, `no-referrer` sur `/m`, `/avis`, `/admin` |
 
-## Notes
+Toutes les actions admin sont tracées dans `journal_admin` (jamais le code maison).
 
-- Le GPS live n'est partagé qu'avec le client, pendant `ARRIVING` (voir « GPS live » plus haut). La carte **admin** continue d'**estimer** la position des tricycles (à la source, ou vers le lot en cours de livraison). Pour un suivi admin, lire `positions_historique` plutôt que de réactiver un GPS permanent.
-- Tuiles : serveur public OpenStreetMap (usage modéré). Pour un fort trafic, prends un fournisseur de tuiles dédié.
-- Polices : Clash Display (Fontshare) avec Sora en repli, Space Grotesk pour le corps.
-- Palette 100 % bleue (`#F7FBFF` / `#0A1931` / `#0096FF` / `#E0F2FF` / `#EDF6FF`) — aucune trace de jaune.
+## Tests
+
+```bash
+npm test          # téléphones, codes trop simples, CSV
+npm run test:sql  # 185 scénarios sur un vrai PostgreSQL (PGlite) : droits, force brute, livreurs, fonctions V2,
+                  # essai gratuit, saisie directe, double commande, clôture, avis…
+npm run typecheck && npm run lint && npm run build
+```
+
+## Reste à faire
+
+- Paiement Wave automatique (aujourd'hui : recharge manuelle par l'admin).
+- Notifications push / SMS (aujourd'hui : rafraîchissement toutes les 15 s + vibration côté livreur).

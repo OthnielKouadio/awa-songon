@@ -1,25 +1,15 @@
 /** @type {import('next').NextConfig} */
 
-// Mode démo : toujours défini (et figé au build) pour que webpack retire mock.ts
-// des bundles hors démo — voir src/lib/data-provider.ts.
-const demoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? "true" : "false";
-
-// Garde-fou : un build de production en mode démo doit être voulu explicitement
-// (ex. un site de démonstration), jamais le résultat d'une variable oubliée.
-if (process.env.NODE_ENV === "production" && demoMode === "true" && process.env.ALLOW_DEMO_BUILD !== "true") {
-  throw new Error("NEXT_PUBLIC_DEMO_MODE=true refusé pour un build de production (définis ALLOW_DEMO_BUILD=true si c'est voulu).");
-}
-
 // En-têtes de sécurité sur toutes les réponses : pas d'affichage dans une iframe
 // d'un autre site (faux clics), pas de devinette de type MIME, HTTPS forcé, et
-// seul le GPS est autorisé (demandé par l'appli elle-même). Referrer : les autres
-// sites ne reçoivent que l'origine, jamais le chemin (les chemins secrets restent
-// secrets) — mais un Referer est bien envoyé, les tuiles OSM l'exigent.
+// seul le GPS est autorisé (position des portails : pose et livreur). Referrer : les autres
+// sites ne reçoivent que l'origine, jamais le chemin (les pages /m/<jeton> et
+// /admin passent même à « no-referrer » dans le middleware).
 //
-// CSP : le jeton de session vit dans le navigateur (l'appli appelle Supabase
-// directement). Si un script malveillant s'exécutait un jour, il ne pourrait ni
-// charger de code externe ni envoyer le jeton ailleurs que vers les serveurs
-// ci-dessous (fetch, WebSocket, beacon, images). 'unsafe-inline' reste
+// CSP : les jetons (appareil du foyer, session admin) vivent dans le navigateur
+// (l'appli appelle Supabase directement). Si un script malveillant s'exécutait
+// un jour, il ne pourrait ni charger de code externe ni envoyer un jeton ailleurs
+// que vers les serveurs ci-dessous (fetch, WebSocket, beacon, images). 'unsafe-inline' reste
 // nécessaire aux scripts inline de Next.js sur des pages statiques (un nonce
 // imposerait un rendu serveur à chaque visite).
 const dev = process.env.NODE_ENV !== "production";
@@ -69,7 +59,6 @@ const nextConfig = {
   poweredByHeader: false,
   // Dossier de sortie séparé possible (ex. build de vérification pendant qu'un `next dev` tourne).
   distDir: process.env.NEXT_DIST_DIR || ".next",
-  env: { NEXT_PUBLIC_DEMO_MODE: demoMode },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

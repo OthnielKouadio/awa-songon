@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
-import { PrivateBaseProvider } from "@/components/PrivateBase";
-import { privatePaths } from "@/lib/private-routes";
+import { basesEspaces } from "@/lib/chemins";
+import { AdminShell } from "./AdminShell";
+import { BasesProvider } from "./Bases";
 
-export const metadata: Metadata = { robots: { index: false, follow: false } };
+export const metadata: Metadata = { title: "Admin — Distribution Eau", robots: { index: false, follow: false } };
 
-// Rendu uniquement derrière le middleware (session admin vérifiée) : le chemin
-// secret n'est donc transmis qu'à un admin connecté.
+// Rendu à chaque requête : les chemins secrets viennent de l'environnement.
+export const dynamic = "force-dynamic";
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  return <PrivateBaseProvider base={`/${privatePaths().admin ?? ""}`}>{children}</PrivateBaseProvider>;
+  return (
+    <BasesProvider bases={basesEspaces()}>
+      <AdminShell>{children}</AdminShell>
+    </BasesProvider>
+  );
 }

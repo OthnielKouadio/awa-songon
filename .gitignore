@@ -7,3 +7,6 @@ out
 *.tsbuildinfo
 next-env.d.ts
 .vercel
+
+# Cache local de la CLI Supabase
+supabase/.temp/

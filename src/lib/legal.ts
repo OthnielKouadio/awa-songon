@@ -7,9 +7,9 @@ export const LEGAL = {
   service: "Distribution Eau",
   editeur: "[Raison sociale à compléter]",
   rccm: "[N° RCCM à compléter]",
-  adresse: "Songon, Abidjan, Côte d'Ivoire",
+  adresse: "Abidjan, Côte d'Ivoire",
   email: "[email de contact à compléter]",
   /** Récépissé de déclaration du traitement auprès de l'ARTCI (loi n°2013-450). */
   artci: "[N° de récépissé ARTCI à compléter]",
-  miseAJour: "16 octobre 2026",
+  miseAJour: "28 octobre 2026",
 } as const;

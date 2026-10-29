@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/lib/phone.test.ts src/lib/pin.test.ts"
+    "test": "node --test src/lib/phone.test.ts src/lib/pin.test.ts src/lib/csv.test.ts",
+    "test:sql": "node supabase/tests/schema.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
@@ -16,6 +17,7 @@
     "leaflet": "1.9",
     "lucide-react": "^1.55.0",
     "next": "^15.5.28",
+    "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-leaflet": "^5.0.0",
@@ -23,8 +25,10 @@
     "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.3.16",
     "@types/leaflet": "1.9",
     "@types/node": "^20.19.43",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.6.1",

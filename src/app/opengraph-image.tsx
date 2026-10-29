@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 
 // Aperçu affiché quand le lien est partagé (WhatsApp, Facebook…). Généré au build.
-export const alt = "Distribution Eau — Livraison d'eau par tricycle à Songon";
+export const alt = "Distribution Eau — Livraison d'eau dans votre cité";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -31,8 +31,8 @@ export default function OpengraphImage() {
           <div style={{ display: "flex", fontSize: 84, fontWeight: 800, letterSpacing: -2 }}>
             Distribution<span style={{ color: "#0096FF", marginLeft: 20 }}>Eau</span>
           </div>
-          <div style={{ fontSize: 40, marginTop: 20, color: "rgba(10,25,49,.75)" }}>Eau pure livrée chez vous à Songon</div>
-          <div style={{ fontSize: 32, marginTop: 28, color: "#0096FF", fontWeight: 700 }}>Commande en 2 clics · suivi en direct</div>
+          <div style={{ fontSize: 40, marginTop: 20, color: "rgba(10,25,49,.75)" }}>Eau livrée chez vous, dans votre cité</div>
+          <div style={{ fontSize: 32, marginTop: 28, color: "#0096FF", fontWeight: 700 }}>Scannez le QR de votre maison · commandez</div>
         </div>
       </div>
     ),

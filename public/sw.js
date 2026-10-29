@@ -3,7 +3,7 @@
 // Aucune donnée métier (commandes, prix, sessions, appels Supabase) n'est
 // jamais mise en cache — tout ça reste toujours en direct du réseau, pour
 // ne jamais montrer un statut de commande périmé.
-const CACHE = "awa-static-v2"; // changer la version purge les anciens caches à l'activation
+const CACHE = "akwaba-static-v3"; // changer la version purge les anciens caches à l'activation
 
 // En local (next dev), les fichiers /_next/static gardent le même nom d'une
 // version à l'autre : les mettre en cache ferait tourner du code périmé. Ici le
