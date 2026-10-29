@@ -1,9 +1,14 @@
-import type { MetadataRoute } from "next";
+import { reponseManifest } from "@/lib/manifestEspace";
 
-/** Next.js sert automatiquement ce fichier sur /manifest.webmanifest et
- *  l'annonce dans le <head> — pas besoin de <link rel="manifest"> manuel. */
-export default function manifest(): MetadataRoute.Manifest {
-  return {
+/**
+ * Appli installable publique (familles) : /manifest.webmanifest.
+ * Route classique plutôt qu'un fichier app/manifest.ts : un manifeste « fichier »
+ * l'emporterait sur celui des espaces admin et livreur, qui doivent pouvoir
+ * annoncer leur propre appli (voir src/lib/manifestEspace.ts).
+ */
+export function GET() {
+  return reponseManifest({
+    id: "/",
     name: "Distribution Eau — Livraison d'eau",
     short_name: "Distribution Eau",
     description: "Livraison d'eau dans votre cité. Scannez l'autocollant de votre maison et commandez.",
@@ -20,5 +25,5 @@ export default function manifest(): MetadataRoute.Manifest {
       { src: "/icons/maskable-192.png", sizes: "192x192", type: "image/png", purpose: "maskable" },
       { src: "/icons/maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
     ],
-  };
+  });
 }

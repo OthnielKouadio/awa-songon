@@ -56,6 +56,9 @@ const securityHeaders = [
 
 const nextConfig = {
   reactStrictMode: true,
+  // Tests sur téléphone en développement (Wi-Fi local ou tunnel HTTPS) : sans
+  // ça, Next.js refuse de servir ses fichiers JS à un autre appareil. Sans effet en production.
+  allowedDevOrigins: ["192.168.100.8", "*.trycloudflare.com"],
   poweredByHeader: false,
   // Dossier de sortie séparé possible (ex. build de vérification pendant qu'un `next dev` tourne).
   distDir: process.env.NEXT_DIST_DIR || ".next",

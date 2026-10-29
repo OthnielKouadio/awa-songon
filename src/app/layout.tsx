@@ -15,6 +15,9 @@ export const metadata: Metadata = {
   title: "Distribution Eau — Livraison d'eau dans votre cité",
   description: DESCRIPTION,
   applicationName: "Distribution Eau",
+  // Appli installable publique (route src/app/manifest.webmanifest) ; les espaces
+  // admin et livreur la remplacent par la leur.
+  manifest: "/manifest.webmanifest",
   // L'image (opengraph-image.tsx) est ajoutée automatiquement par Next.js.
   openGraph: {
     type: "website",

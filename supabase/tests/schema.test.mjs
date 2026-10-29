@@ -386,8 +386,9 @@ await as("admin", "select public.admin_paiement('LIVREUR', $1, 'PAYE')", [sid]);
 check(val(await as("admin", "select public.admin_livreurs()")).find((l) => l.id === sid).statut_paiement === "PAYE", "livreur marqué PAYÉ");
 const dash = val(await as("admin", "select public.admin_dashboard()"));
 check(dash.maisons > 300 && typeof dash.ca_jour === "number" && dash.carte_livreurs.some((l) => l.id === sid && l.origine === "FORAGE"), "dashboard : compteurs + carte (livreur à son forage)", dash.carte_livreurs);
-check(Array.isArray(val(await as("anon", "select public.m_consommation($1,$2)", [lotA[iP].qr_token, fa[iP]]))), "consommation par mois");
-check(val(await as("anon", "select public.m_historique($1,$2)", [lotA[iP].qr_token, fa[iP]])).length >= 1, "historique complet du foyer");
+// Maison ARC 005 : ses téléphones ne sont jamais déconnectés dans ce scénario (indépendant de l'heure du test).
+check(Array.isArray(val(await as("anon", "select public.m_consommation($1,$2)", [lotA[4].qr_token, fa[4]]))), "consommation par mois");
+check(val(await as("anon", "select public.m_historique($1,$2)", [lotA[4].qr_token, fa[4]])).length >= 1, "historique complet du foyer");
 
 console.log("\n— V2 : reprise des anciens clients");
 await db.exec(`
